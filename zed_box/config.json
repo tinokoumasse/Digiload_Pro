@@ -1,0 +1,129 @@
+{
+    "gate_id": 1,
+    "gate_name": "Gate 1",
+    "ip_mode": "dhcp",
+    "ip": "",
+    "modules": {
+        "video_tracking": {
+            "enabled": false,
+            "license_key": ""
+        },
+        "multi_angle": {
+            "enabled": false,
+            "license_key": ""
+        }
+    },
+    "camera": {
+        "primary": {
+            "serial": 0,
+            "resolution": "HD1080",
+            "fps": 60
+        },
+        "secondary": {
+            "enabled": false,
+            "serial": 0,
+            "resolution": "HD720",
+            "fps": 30
+        },
+        "auto_exposure": true,
+        "exposure": 30,
+        "gain": 85
+    },
+    "recording": {
+        "output_dir": "clips",
+        "pre_seconds": 10,
+        "post_seconds": 5,
+        "buffer_fps": 30,
+        "retention_days": 30,
+        "max_disk_gb": 50
+    },
+    "gate": {
+        "rect": [
+            778,
+            562,
+            697,
+            304
+        ]
+    },
+    "led": {
+        "ip": "192.168.1.100",
+        "presets": {
+            "standby": {
+                "r": 0,
+                "g": 0,
+                "b": 255,
+                "effect": "breath",
+                "brightness": 128,
+                "speed": 100
+            },
+            "armed": {
+                "r": 0,
+                "g": 255,
+                "b": 0,
+                "effect": "static",
+                "brightness": 200,
+                "speed": 128
+            },
+            "error": {
+                "r": 255,
+                "g": 0,
+                "b": 0,
+                "effect": "blink",
+                "brightness": 255,
+                "speed": 100
+            },
+            "confirmed": {
+                "r": 255,
+                "g": 255,
+                "b": 255,
+                "effect": "static",
+                "brightness": 255,
+                "speed": 128
+            },
+            "off": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "effect": "static",
+                "brightness": 0,
+                "speed": 128
+            }
+        }
+    },
+    "system": {
+        "target_id": 0,
+        "forklift_ids": [
+            0
+        ],
+        "lock_duration": 5.0
+    },
+    "wms": {
+        "webhook_url": "",
+        "api_key": "",
+        "retry_interval_s": 30,
+        "max_retries": 288
+    },
+    "vm": {
+        "sync_url": "",
+        "enabled": false,
+        "required": false
+    },
+    "theme": {
+        "accent_hex": "#2f7df6",
+        "sidebar_hex": "#05080",
+        "text_title_hex": "#4a6080",
+        "text_main_hex": "#e8f0ff",
+        "logo_path": "logo.png",
+        "logo_size": 0.15,
+        "opacity": 0.85
+    },
+    "ui_text": {
+        "title": "DIGILOAD PRO",
+        "idle": "AWAITING MISSION",
+        "standby": "SCAN BARCODE",
+        "armed": "LOADING AUTHORIZED",
+        "wrong_forklift": "WRONG FORKLIFT",
+        "wrong_sscc": "INVALID BARCODE",
+        "validated": "PALLET LOADED"
+    }
+}

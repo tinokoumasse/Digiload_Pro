@@ -1,0 +1,14 @@
+# Digiload Pro v2 — ZED Box dependencies
+# Install: pip install -r requirements.txt --break-system-packages
+
+flask>=3.0
+requests>=2.31
+numpy>=1.26
+opencv-python>=4.9
+
+# ZED SDK Python wrapper — install separately from Stereolabs:
+# https://www.stereolabs.com/docs/app-development/python/install/
+# pyzed (not on PyPI — bundled with ZED SDK)
+
+# ffmpeg — install via apt:
+# sudo apt install ffmpeg -y
