@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Fleet Health — Digiload Pro{% endblock %}
+
+{% block head %}
+<style>
+.health-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.hc{background:var(--glass);border:1px solid var(--border);border-radius:var(--r);padding:20px;text-align:center;transition:all .2s}
+.hc:hover{background:var(--glass-hi);transform:translateY(-2px)}
+.hc-n{font-family:var(--display);font-weight:800;font-size:42px;line-height:1;margin-bottom:6px}
+.hc-l{font-family:var(--sans);font-size:9px;font-weight:300;letter-spacing:3px;text-transform:uppercase;color:var(--text3)}
+.hc-n.blue{color:var(--blue)}.hc-n.green{color:var(--green)}.hc-n.red{color:var(--red)}.hc-n.amber{color:var(--amber)}
+.alerts-list{display:flex;flex-direction:column;gap:8px}
+.alert-item{
+  display:flex;align-items:center;gap:12px;padding:12px 16px;
+  border-radius:var(--rsm);border:1px solid;
+}
+.alert-item.error{background:rgba(255,69,58,.08);border-color:rgba(255,69,58,.2)}
+.alert-item.warning{background:rgba(255,214,10,.06);border-color:rgba(255,214,10,.2)}
+.alert-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.alert-item.error .alert-dot{background:var(--red)}
+.alert-item.warning .alert-dot{background:var(--amber)}
+.alert-gate{font-family:var(--display);font-weight:700;font-size:12px;min-width:80px}
+.alert-msg{font-family:var(--sans);font-size:12px;color:var(--text2)}
+.deploy-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gate-deploy-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)}
+.gate-deploy-row:last-child{border-bottom:none}
+.deploy-status{font-family:var(--mono);font-size:10px}
+.ds-pending{color:var(--text3)}.ds-deploying{color:var(--blue)}.ds-done{color:var(--green)}.ds-failed{color:var(--red)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <div style="font-family:var(--display);font-weight:800;font-size:22px">Fleet Health</div>
+  <div style="display:flex;gap:8px">
+    <a href="/health-dashboard" class="btn btn-muted btn-sm">↻ Refresh</a>
+    {% if user.role == 'ADMIN' %}
+    <button class="btn btn-solid btn-sm" onclick="document.getElementById('deploy-modal').classList.add('open')">Deploy Update</button>
+    {% endif %}
+  </div>
+</div>
+
+<!-- KPI Cards -->
+<div class="health-grid" id="kpi-grid">
+  <div class="hc"><div class="hc-n blue" id="h-uptime">—</div><div class="hc-l">Fleet Uptime %</div></div>
+  <div class="hc"><div class="hc-n green" id="h-online">—</div><div class="hc-l">Gates Online</div></div>
+  <div class="hc"><div class="hc-n" id="h-wms">—</div><div class="hc-l">WMS Rate 24h</div></div>
+  <div class="hc"><div class="hc-n" id="h-cpu">—</div><div class="hc-l">Avg CPU %</div></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+  <!-- Alerts -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Alerts</span>
+      <span id="alert-count" style="font-family:var(--mono);font-size:10px;color:var(--text3)">Loading...</span>
+    </div>
+    <div class="card-body">
+      <div class="alerts-list" id="alerts-list">
+        <div class="empty"><div class="empty-ring"></div><div class="empty-text">Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gate Status Table -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">All Gates</span></div>
+    <table>
+      <thead><tr><th>Gate</th><th>Status</th><th>CPU</th><th>Disk GB</th><th>Camera</th></tr></thead>
+      <tbody id="gates-tbody">
+        <tr><td colspan="5"><div class="empty"><div class="empty-ring"></div><div class="empty-text">Loading...</div></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Deploy Modal -->
+<div class="modal-backdrop" id="deploy-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <span class="modal-title">Deploy Update</span>
+      <button class="modal-close" onclick="document.getElementById('deploy-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Version Tag</label>
+      <input type="text" id="deploy-version" class="form-input" placeholder="v2.1"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Strategy</label>
+      <select id="deploy-strategy" class="form-select">
+        <option value="rolling">Rolling (one gate at a time — safer)</option>
+        <option value="all">All at once (faster)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Target Gates</label>
+      <div id="gate-checkboxes" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px"></div>
+    </div>
+    <div id="deploy-progress" style="display:none;margin-top:16px">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:8px">Deploying...</div>
+      <div id="deploy-gate-list" style="display:flex;flex-direction:column;gap:4px"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-solid" onclick="startDeploy()" id="deploy-btn" style="flex:1">Deploy</button>
+      <button class="btn btn-muted" onclick="document.getElementById('deploy-modal').classList.remove('open')">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+let healthData = null;
+
+async function loadHealth() {
+  const r = await fetch('/api/fleet/health');
+  const d = await r.json();
+  if (!d.ok) return;
+  healthData = d;
+
+  // KPIs
+  const uEl = document.getElementById('h-uptime');
+  uEl.textContent = d.uptime_pct + '%';
+  uEl.className   = 'hc-n ' + (d.uptime_pct >= 90 ? 'green' : d.uptime_pct >= 70 ? 'amber' : 'red');
+
+  document.getElementById('h-online').textContent = `${d.online}/${d.total_gates}`;
+  document.getElementById('h-online').className   = 'hc-n ' + (d.offline === 0 ? 'green' : 'amber');
+
+  const wEl = document.getElementById('h-wms');
+  wEl.textContent = d.wms_rate + '%';
+  wEl.className   = 'hc-n ' + (d.wms_rate >= 99 ? 'green' : d.wms_rate >= 95 ? 'amber' : 'red');
+
+  const cEl = document.getElementById('h-cpu');
+  cEl.textContent = d.avg_cpu + '%';
+  cEl.className   = 'hc-n ' + (d.avg_cpu < 60 ? 'green' : d.avg_cpu < 80 ? 'amber' : 'red');
+
+  // Alerts
+  const alertsList = document.getElementById('alerts-list');
+  document.getElementById('alert-count').textContent = `${d.alerts.length} active`;
+  if (d.alerts.length === 0) {
+    alertsList.innerHTML = `<div class="empty"><div class="empty-ring"></div><div class="empty-text">All systems nominal</div></div>`;
+  } else {
+    alertsList.innerHTML = d.alerts.map(a => `
+      <div class="alert-item ${a.level}">
+        <div class="alert-dot"></div>
+        <div class="alert-gate">${a.gate}</div>
+        <div class="alert-msg">${a.message}</div>
+      </div>`).join('');
+  }
+
+  // Gates table
+  const tbody = document.getElementById('gates-tbody');
+  if (!d.gates.length) {
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No gates registered</div></div></td></tr>`;
+  } else {
+    tbody.innerHTML = d.gates.map(g => {
+      const online = g.status === 'ONLINE';
+      const cpu    = g.cpu_pct != null ? g.cpu_pct + '%' : '—';
+      const disk   = g.disk_free_gb != null ? parseFloat(g.disk_free_gb).toFixed(1) : '—';
+      const cpuCls = g.cpu_pct > 80 ? 'color:var(--amber)' : g.cpu_pct > 95 ? 'color:var(--red)' : '';
+      const dskCls = g.disk_free_gb < 5 ? 'color:var(--red)' : g.disk_free_gb < 20 ? 'color:var(--amber)' : '';
+      return `<tr>
+        <td class="td-main"><a href="/gate/${g.id}" style="color:var(--text);text-decoration:none">${g.name}</a></td>
+        <td><span class="pill ${online?'pill-online':'pill-offline'}">${g.status}</span></td>
+        <td style="${cpuCls};font-family:var(--mono);font-size:11px">${cpu}</td>
+        <td style="${dskCls};font-family:var(--mono);font-size:11px">${disk}</td>
+        <td style="font-family:var(--mono);font-size:11px;color:${!online?'var(--text3)':g.camera_ok?'var(--green)':'var(--red)'}">${!online?'—':g.camera_ok?'✓':'✕'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Populate gate checkboxes in deploy modal
+  const cb = document.getElementById('gate-checkboxes');
+  cb.innerHTML = d.gates.map(g =>
+    `<label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-family:var(--sans);font-size:12px">
+      <input type="checkbox" value="${g.id}" ${g.status==='ONLINE'?'checked':''}/> ${g.name}
+    </label>`
+  ).join('');
+}
+
+async function startDeploy() {
+  const version  = document.getElementById('deploy-version').value.trim() || 'latest';
+  const strategy = document.getElementById('deploy-strategy').value;
+  const checked  = [...document.querySelectorAll('#gate-checkboxes input:checked')].map(i => parseInt(i.value));
+
+  if (!checked.length) { toast('Select at least one gate','err'); return; }
+
+  document.getElementById('deploy-btn').disabled = true;
+  document.getElementById('deploy-progress').style.display = 'block';
+
+  const r = await fetch('/api/fleet/deploy', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({gate_ids: checked, version, strategy, restart: true})
+  });
+  const d = await r.json();
+  if (!d.ok) { toast(d.error||'Error','err'); return; }
+
+  toast(`Deploy job ${d.job_id} started — ${d.gates} gates`,'info');
+
+  // Poll progress
+  const jobId = d.job_id;
+  const list  = document.getElementById('deploy-gate-list');
+
+  const poll = setInterval(async () => {
+    const pr = await fetch(`/api/fleet/deploy/${jobId}`);
+    const pd = await pr.json();
+    if (!pd.ok) return;
+
+    list.innerHTML = Object.entries(pd.gates).map(([gid, status]) => {
+      const g = healthData?.gates?.find(x => x.id == gid);
+      const name = g ? g.name : `Gate ${gid}`;
+      const cls  = {pending:'ds-pending',deploying:'ds-deploying',done:'ds-done',failed:'ds-failed'}[status]||'ds-pending';
+      const icon = {pending:'⏸',deploying:'⟳',done:'✓',failed:'✕'}[status]||'⏸';
+      return `<div class="gate-deploy-row">
+        <span style="font-family:var(--sans);font-size:12px">${name}</span>
+        <span class="deploy-status ${cls}">${icon} ${status.toUpperCase()}</span>
+      </div>`;
+    }).join('');
+
+    if (pd.status === 'complete') {
+      clearInterval(poll);
+      toast('Deploy complete','ok');
+      document.getElementById('deploy-btn').disabled = false;
+      setTimeout(() => loadHealth(), 2000);
+    }
+  }, 1500);
+}
+
+// Load on mount and refresh every 30s
+loadHealth();
+setInterval(loadHealth, 30000);
+{% endblock %}

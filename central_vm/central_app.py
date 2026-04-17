@@ -1117,8 +1117,186 @@ def save_global_config():
     return jsonify({"ok": True})
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ── INSTALL SCRIPT ENDPOINT ──────────────────────────────────────────────────
+# ── FLEET HEALTH ─────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/fleet/health")
+@login_required
+def fleet_health():
+    """
+    Aggregate health metrics across all gates.
+    Used by the fleet health dashboard screen.
+    """
+    gates = _q("SELECT * FROM gates ORDER BY id", fetchall=True) or []
+    now   = time.time()
+
+    online    = [g for g in gates if g["status"] == "ONLINE"]
+    offline   = [g for g in gates if g["status"] != "ONLINE"]
+    camera_ok = [g for g in online if g.get("camera_ok")]
+
+    # Uptime percentage (gates online in last hour)
+    uptime_pct = round(len(online) / len(gates) * 100, 1) if gates else 0
+
+    # Average CPU and disk across online gates
+    cpu_vals  = [g["cpu_pct"]      for g in online if g.get("cpu_pct")      is not None]
+    disk_vals = [g["disk_free_gb"] for g in online if g.get("disk_free_gb") is not None]
+    avg_cpu   = round(sum(cpu_vals)  / len(cpu_vals),  1) if cpu_vals  else 0
+    avg_disk  = round(sum(disk_vals) / len(disk_vals), 1) if disk_vals else 0
+
+    # WMS delivery stats (last 24h)
+    wms_stats = _q("""
+        SELECT
+            COUNT(*)                                   as total,
+            SUM(CASE WHEN success THEN 1 ELSE 0 END)  as delivered,
+            SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as failed
+        FROM wms_delivery_log
+        WHERE delivered_at > now() - INTERVAL '24 hours'
+    """, fetchone=True)
+
+    wms_total     = int(wms_stats["total"])     if wms_stats else 0
+    wms_delivered = int(wms_stats["delivered"]) if wms_stats else 0
+    wms_rate      = round(wms_delivered / wms_total * 100, 1) if wms_total > 0 else 100
+
+    # Alerts
+    alerts = []
+    for g in gates:
+        if g["status"] != "ONLINE":
+            since = g.get("last_heartbeat")
+            alerts.append({
+                "level":   "error",
+                "gate_id": g["id"],
+                "gate":    g["name"],
+                "message": f"Offline since {since.strftime('%H:%M') if since else 'unknown'}"
+            })
+        elif g.get("cpu_pct") and g["cpu_pct"] > 80:
+            alerts.append({
+                "level":   "warning",
+                "gate_id": g["id"],
+                "gate":    g["name"],
+                "message": f"High CPU: {g['cpu_pct']}%"
+            })
+        elif g.get("disk_free_gb") is not None and g["disk_free_gb"] < 10:
+            alerts.append({
+                "level":   "warning",
+                "gate_id": g["id"],
+                "gate":    g["name"],
+                "message": f"Low disk: {g['disk_free_gb']} GB free"
+            })
+        elif not g.get("camera_ok") and g["status"] == "ONLINE":
+            alerts.append({
+                "level":   "warning",
+                "gate_id": g["id"],
+                "gate":    g["name"],
+                "message": "Camera not responding"
+            })
+
+    return jsonify({
+        "ok":           True,
+        "total_gates":  len(gates),
+        "online":       len(online),
+        "offline":      len(offline),
+        "camera_ok":    len(camera_ok),
+        "uptime_pct":   uptime_pct,
+        "avg_cpu":      avg_cpu,
+        "avg_disk_gb":  avg_disk,
+        "wms_total":    wms_total,
+        "wms_delivered":wms_delivered,
+        "wms_rate":     wms_rate,
+        "alerts":       alerts,
+        "gates":        [dict(g) for g in gates],
+    })
+
+@app.route("/health-dashboard")
+@login_required
+def health_dashboard():
+    return render_template("health.html", user=request.user)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── ROLLING DEPLOY ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+_deploy_jobs = {}   # job_id → { status, progress, results }
+
+@app.route("/api/fleet/deploy", methods=["POST"])
+@role_required("ADMIN")
+def fleet_deploy():
+    """
+    Rolling deploy to multiple gates.
+    Reads files from RELEASES_DIR and pushes to selected gates via agent.
+    Strategy: rolling (one at a time) | all (parallel)
+    """
+    data     = request.get_json(silent=True) or {}
+    gate_ids = data.get("gate_ids", [])
+    version  = data.get("version", "latest")
+    strategy = data.get("strategy", "rolling")   # 'rolling' | 'all'
+    restart  = data.get("restart", True)
+
+    if not gate_ids:
+        return jsonify({"ok": False, "error": "gate_ids required"}), 400
+
+    # Read release files
+    files = []
+    for fname in ["digiload_pro.py", "wms_connector.py", "agent.py"]:
+        fpath = os.path.join(RELEASES_DIR, fname)
+        if os.path.exists(fpath):
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+            files.append({
+                "path":    fname,
+                "content": content,
+                "md5":     hashlib.md5(content.encode()).hexdigest()
+            })
+
+    if not files:
+        return jsonify({"ok": False, "error": "No release files found in releases/"}), 400
+
+    job_id = uuid.uuid4().hex[:8]
+    _deploy_jobs[job_id] = {
+        "status":   "running",
+        "version":  version,
+        "strategy": strategy,
+        "gates":    {gid: "pending" for gid in gate_ids},
+        "results":  {}
+    }
+
+    def _run_deploy():
+        job = _deploy_jobs[job_id]
+        for gate_id in gate_ids:
+            job["gates"][gate_id] = "deploying"
+            result = _push_to_agent(
+                gate_id, "/agent/deploy",
+                {"version": version, "files": files, "restart": restart}
+            )
+            job["gates"][gate_id]    = "done" if result.get("ok") else "failed"
+            job["results"][gate_id]  = result
+            _audit("update.deployed",
+                   user_id=request.user.get("sub"),
+                   user_email=request.user.get("email"),
+                   target_type="gate", target_id=gate_id,
+                   details={"version": version, "job_id": job_id})
+            if strategy == "rolling":
+                time.sleep(3)   # wait between gates in rolling mode
+        job["status"] = "complete"
+        log.info(f"[deploy] Job {job_id} complete — {len(gate_ids)} gates")
+
+    threading.Thread(target=_run_deploy, daemon=True).start()
+
+    return jsonify({
+        "ok":     True,
+        "job_id": job_id,
+        "gates":  len(gate_ids),
+        "files":  [f["path"] for f in files]
+    })
+
+@app.route("/api/fleet/deploy/<job_id>")
+@role_required("ADMIN")
+def deploy_job_status(job_id):
+    """Poll deploy job progress."""
+    job = _deploy_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({"ok": True, **job})
+
+
 @app.route("/install")
 def serve_install_script():
     """
