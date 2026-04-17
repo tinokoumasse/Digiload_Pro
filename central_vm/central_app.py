@@ -1169,6 +1169,176 @@ def _offline_check_loop():
 threading.Thread(target=_offline_check_loop, daemon=True).start()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ── SIGNED URLS ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+def _make_signed_url(clip_id: str, expires_in: int = 900) -> str:
+    """
+    Generate a signed URL for clip access.
+    expires_in: seconds (default 15 min)
+    Token = HMAC-SHA256(clip_id + expires_ts, SECRET_KEY)
+    """
+    expires_ts = int(time.time()) + expires_in
+    payload    = f"{clip_id}:{expires_ts}"
+    sig        = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return url_for("stream_clip", clip_id=clip_id,
+                   expires=expires_ts, sig=sig, _external=True)
+
+def _verify_signed_url(clip_id: str, expires: str, sig: str) -> bool:
+    try:
+        if int(expires) < int(time.time()):
+            return False   # expired
+        payload  = f"{clip_id}:{expires}"
+        expected = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, sig)
+    except Exception:
+        return False
+
+
+@app.route("/clips/stream/<clip_id>")
+def stream_clip(clip_id):
+    """Serve clip via signed URL — no direct auth required, URL is the token."""
+    expires = request.args.get("expires","")
+    sig     = request.args.get("sig","")
+    if not _verify_signed_url(clip_id, expires, sig):
+        return "Link expired or invalid", 403
+    clip = _q("SELECT * FROM clips WHERE id=%s AND deleted=false",
+              (clip_id,), fetchone=True)
+    if not clip:
+        return "Clip not found", 404
+    _audit("clip.viewed", details={"clip_id": clip_id, "sscc": clip.get("sscc")})
+    return send_from_directory(CLIPS_DIR, clip["filename"])
+
+
+@app.route("/api/clips/<clip_id>/signed-url")
+@login_required
+def get_signed_url(clip_id):
+    """Generate a signed URL for a clip — checks RBAC first."""
+    clip = _q("SELECT * FROM clips WHERE id=%s AND deleted=false",
+              (clip_id,), fetchone=True)
+    if not clip:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    if not _can_access_gate(request.user, clip["gate_id"]):
+        return jsonify({"ok": False, "error": "Forbidden"}), 403
+    url = _make_signed_url(clip_id)
+    return jsonify({"ok": True, "url": url, "expires_in": 900})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── REPORTS ──────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/missions/<mission_id>/report/pdf")
+@login_required
+def mission_report_pdf(mission_id):
+    """Generate and serve PDF proof of delivery."""
+    mission = _q("SELECT * FROM missions WHERE id=%s", (mission_id,), fetchone=True)
+    if not mission:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    if not _can_access_gate(request.user, mission["gate_id"]):
+        return jsonify({"ok": False, "error": "Forbidden"}), 403
+
+    pallets = _q("SELECT * FROM pallets WHERE mission_id=%s ORDER BY id",
+                 (mission_id,), fetchall=True) or []
+    clips   = _q("SELECT sscc, id FROM clips WHERE mission_id=%s AND deleted=false",
+                 (mission_id,), fetchall=True) or []
+
+    # Build signed URL map { sscc → url }
+    clip_urls = {}
+    for c in clips:
+        clip_urls[c["sscc"]] = _make_signed_url(str(c["id"]))
+
+    try:
+        from reports import generate_pdf
+        pdf_bytes = generate_pdf(dict(mission), [dict(p) for p in pallets], clip_urls)
+    except Exception as e:
+        log.error(f"[pdf] {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    _audit("report.downloaded", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           target_type="mission", target_id=mission_id,
+           details={"format": "pdf"})
+
+    filename = f"digiload_report_{mission['name'].replace(' ','_')}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@app.route("/api/missions/<mission_id>/report/excel")
+@login_required
+def mission_report_excel(mission_id):
+    """Generate and serve Excel export."""
+    mission = _q("SELECT * FROM missions WHERE id=%s", (mission_id,), fetchone=True)
+    if not mission:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    if not _can_access_gate(request.user, mission["gate_id"]):
+        return jsonify({"ok": False, "error": "Forbidden"}), 403
+
+    pallets = _q("SELECT * FROM pallets WHERE mission_id=%s ORDER BY id",
+                 (mission_id,), fetchall=True) or []
+
+    try:
+        from reports import generate_excel
+        xlsx_bytes = generate_excel(dict(mission), [dict(p) for p in pallets])
+    except Exception as e:
+        log.error(f"[excel] {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    _audit("report.downloaded", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           target_type="mission", target_id=mission_id,
+           details={"format": "excel"})
+
+    filename = f"digiload_{mission['name'].replace(' ','_')}.xlsx"
+    return Response(
+        xlsx_bytes,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── AUTO-DELETE BACKGROUND JOB (retention policy) ────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+def _auto_delete_loop():
+    """
+    Nightly job — deletes clips older than RETENTION_DAYS.
+    Marks clip as deleted in DB, removes file from disk.
+    Runs every 24 hours at ~2am.
+    """
+    while True:
+        # Sleep until 2am
+        now     = datetime.utcnow()
+        target  = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target = target.replace(day=target.day + 1)
+        time.sleep((target - now).total_seconds())
+
+        log.info("[retention] Starting nightly clip cleanup")
+        try:
+            expired = _q("""SELECT id, filename FROM clips
+                            WHERE expires_at < now() AND deleted=false""",
+                         fetchall=True) or []
+            deleted = 0
+            for clip in expired:
+                filepath = os.path.join(CLIPS_DIR, clip["filename"])
+                try:
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    _q("UPDATE clips SET deleted=true WHERE id=%s", (clip["id"],))
+                    deleted += 1
+                except Exception as e:
+                    log.warning(f"[retention] Cannot delete {clip['filename']}: {e}")
+            log.info(f"[retention] Deleted {deleted} expired clips")
+        except Exception as e:
+            log.error(f"[retention] {e}")
+
+threading.Thread(target=_auto_delete_loop, daemon=True).start()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ── STARTUP ──────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 def create_default_admin():
