@@ -1078,27 +1078,6 @@ def handle_key(key,cam):
     return True
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MINIMAL STATUS ENDPOINT (replaces full app.py)
-# ─────────────────────────────────────────────────────────────────────────────
-def _status_server():
-    from flask import Flask, jsonify
-    app=Flask("digiload_status")
-    @app.route("/status")
-    def status():
-        loaded,total=db_get_progress(st.active_tour_id) if st.active_tour_id else (0,0)
-        return jsonify({
-            "gate_id":st.gate_id,"gate_name":st.gate_name,
-            "app_mode":st.app_mode,"active_tour_id":st.active_tour_id,
-            "current_sscc":st.current_sscc,"loaded":loaded,"total":total,
-            "module_video":st.module_video_tracking,"module_multi":st.module_multi_angle,
-            "net_status":st.net_status,"timestamp":datetime.now().isoformat()
-        })
-    @app.route("/health")
-    def health(): return jsonify({"ok":True,"gate_id":st.gate_id})
-    import logging as _l; _l.getLogger("werkzeug").setLevel(_l.ERROR)
-    app.run(host="0.0.0.0",port=5002,debug=False)
-
-# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def run():
@@ -1117,7 +1096,6 @@ def run():
     threading.Thread(target=poll_db_activation,daemon=True).start()
     if st.module_video_tracking:
         threading.Thread(target=disk_manager_loop,args=(st.rec_dir,st.ret_days,st.max_disk),daemon=True).start()
-    threading.Thread(target=_status_server,daemon=True).start()
     log.info("[status] http://0.0.0.0:5001/status")
     cam=CameraManager(); cfg=st.raw_config.get("camera",{})
     if not cam.open_primary(cfg.get("primary",DEFAULT_CONFIG["camera"]["primary"])):
