@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Missions — Digiload Pro{% endblock %}
+
+{% block head %}
+<style>
+.missions-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.missions-title{font-family:var(--display);font-weight:800;font-size:22px}
+.status-filter{display:flex;gap:6px}
+.sf{font-family:var(--sans);font-size:11px;padding:5px 14px;border-radius:20px;border:1px solid var(--border);color:var(--text3);cursor:pointer;transition:all .2s}
+.sf.active{background:var(--blue-dim);border-color:var(--blue);color:var(--blue)}
+.sf:hover:not(.active){background:var(--glass-hi);color:var(--text2)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="missions-header">
+  <div>
+    <div class="missions-title">Missions</div>
+  </div>
+  <div style="display:flex;gap:8px">
+    {% if user.role != 'OPERATOR' %}
+    <button class="btn btn-solid" onclick="document.getElementById('import-modal').classList.add('open')">+ Import CSV</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">All Missions</span>
+    <div class="status-filter">
+      <span class="sf active" onclick="filterMissions('ALL',this)">All</span>
+      <span class="sf" onclick="filterMissions('WAITING',this)">Waiting</span>
+      <span class="sf" onclick="filterMissions('ACTIVE',this)">Active</span>
+      <span class="sf" onclick="filterMissions('COMPLETED',this)">Done</span>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Mission</th>
+        <th>Gate</th>
+        <th>Status</th>
+        <th>Pallets</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="missions-tbody">
+      {% for m in missions %}
+      <tr class="mission-row" data-status="{{ m.status }}">
+        <td class="td-main">{{ m.name }}</td>
+        <td>{{ m.gate_name or m.gate_id or '—' }}</td>
+        <td>
+          <span class="pill {% if m.status == 'ACTIVE' %}pill-active{% elif m.status == 'COMPLETED' %}pill-done{% elif m.status == 'WAITING' %}pill-waiting{% elif m.status == 'CANCELLED' %}pill-offline{% else %}pill-idle{% endif %}">
+            {{ m.status }}
+          </span>
+        </td>
+        <td>{{ m.loaded or 0 }} / {{ m.total_pallets }}</td>
+        <td>{{ m.created_at.strftime('%d/%m %H:%M') if m.created_at else '—' }}</td>
+        <td style="display:flex;gap:4px">
+          {% if user.role != 'OPERATOR' %}
+            {% if m.status == 'WAITING' %}
+            <button class="btn btn-blue btn-sm" onclick="activate('{{ m.id }}')">Activate</button>
+            {% elif m.status == 'ACTIVE' %}
+            <button class="btn btn-red btn-sm" onclick="deactivate('{{ m.id }}')">Deactivate</button>
+            {% endif %}
+          {% endif %}
+          <a href="/gate/{{ m.gate_id }}" class="btn btn-muted btn-sm">View Gate</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">
+        <div class="empty"><div class="empty-ring"></div><div class="empty-text">No missions yet</div></div>
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Import Modal -->
+<div class="modal-backdrop" id="import-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Import Mission</span>
+      <button class="modal-close" onclick="document.getElementById('import-modal').classList.remove('open')">✕</button>
+    </div>
+    <form id="import-form" enctype="multipart/form-data">
+      <div class="form-group">
+        <label class="form-label">Mission Name</label>
+        <input type="text" name="name" id="import-name" class="form-input" placeholder="DHL Quai Nord 14h" required/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Gate</label>
+        <select name="gate_id" class="form-select" required>
+          <option value="">Select gate...</option>
+          {% for g in gates %}
+          <option value="{{ g.id }}">{{ g.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">CSV File</label>
+        <input type="file" name="csv" class="form-input" accept=".csv" required style="padding:8px"/>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button type="button" class="btn btn-solid" onclick="importMission()" style="flex:1">Import</button>
+        <button type="button" class="btn btn-muted" onclick="document.getElementById('import-modal').classList.remove('open')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+function filterMissions(status, el) {
+  document.querySelectorAll('.sf').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.mission-row').forEach(row => {
+    row.style.display = (status === 'ALL' || row.dataset.status === status) ? '' : 'none';
+  });
+}
+
+async function activate(id) {
+  const r = await fetch(`/api/missions/${id}/activate`, {method:'POST'});
+  const d = await r.json();
+  d.ok ? (toast('Mission activated','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function deactivate(id) {
+  const r = await fetch(`/api/missions/${id}/deactivate`, {method:'POST'});
+  const d = await r.json();
+  d.ok ? (toast('Mission deactivated','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function importMission() {
+  const form = document.getElementById('import-form');
+  const fd   = new FormData(form);
+  const name = fd.get('name');
+  const gate = fd.get('gate_id');
+  const csv  = fd.get('csv');
+  if (!name || !gate || !csv || csv.size === 0) { toast('All fields required','err'); return; }
+  const r = await fetch('/api/missions/import', {method:'POST', body: fd});
+  const d = await r.json();
+  if (d.ok) {
+    toast(`${d.count} pallets imported`, 'ok');
+    document.getElementById('import-modal').classList.remove('open');
+    setTimeout(() => location.reload(), 800);
+  } else {
+    toast(d.error || 'Import failed', 'err');
+  }
+}
+{% endblock %}

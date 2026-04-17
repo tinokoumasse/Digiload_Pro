@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Digiload Pro — Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Outfit:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#05080f; --glass:rgba(255,255,255,0.05); --border:rgba(255,255,255,0.08);
+  --blue:#2f7df6; --blue-glow:rgba(47,125,246,0.25); --blue-dim:rgba(47,125,246,0.12);
+  --text:#e8f0ff; --text2:#7a90b8; --text3:#3a4f6e; --red:#ff453a;
+  --r:14px; --sans:'Outfit',sans-serif; --display:'Montserrat',sans-serif;
+}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--sans);
+  min-height:100vh; display:flex; align-items:center; justify-content:center;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:''; position:fixed; inset:0; pointer-events:none;
+  background:
+    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(47,125,246,.12) 0%,transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(47,125,246,.07) 0%,transparent 60%);
+}
+.card{
+  background:var(--glass); border:1px solid var(--border);
+  backdrop-filter:blur(24px); border-radius:var(--r);
+  padding:48px 40px; width:100%; max-width:400px;
+  position:relative; z-index:1;
+}
+.logo{
+  font-family:var(--display); font-weight:800; font-size:18px;
+  color:var(--blue); letter-spacing:2px; text-transform:uppercase;
+  text-shadow:0 0 24px var(--blue-glow); text-align:center; margin-bottom:6px;
+}
+.sub{
+  font-family:var(--sans); font-weight:300; font-size:11px;
+  letter-spacing:4px; text-transform:uppercase; color:var(--text3);
+  text-align:center; margin-bottom:36px;
+}
+.field{margin-bottom:18px}
+label{
+  display:block; font-size:10px; font-weight:500; letter-spacing:2px;
+  text-transform:uppercase; color:var(--text3); margin-bottom:6px;
+}
+input{
+  width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--border);
+  border-radius:10px; padding:12px 16px; font-family:var(--sans); font-size:14px;
+  color:var(--text); outline:none; transition:border-color .2s, box-shadow .2s;
+}
+input:focus{border-color:var(--blue); box-shadow:0 0 0 3px var(--blue-dim)}
+.btn{
+  width:100%; padding:13px; background:var(--blue); border:none;
+  border-radius:10px; font-family:var(--sans); font-size:14px; font-weight:600;
+  color:#fff; cursor:pointer; letter-spacing:.5px; margin-top:8px;
+  transition:all .2s ease;
+}
+.btn:hover{box-shadow:0 0 24px var(--blue-glow); transform:translateY(-1px)}
+.btn:active{transform:scale(.98)}
+.error{
+  background:rgba(255,69,58,.1); border:1px solid rgba(255,69,58,.3);
+  border-radius:10px; padding:10px 14px; font-size:12px; color:var(--red);
+  margin-bottom:18px; display:none;
+}
+.error.show{display:block}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Digiload Pro</div>
+  <div class="sub">Mission Control</div>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="error show">{{ messages[0] }}</div>
+    {% endif %}
+  {% endwith %}
+  <div id="err" class="error"></div>
+  <form method="POST" action="/login">
+    <div class="field">
+      <label>Email</label>
+      <input type="email" name="email" placeholder="admin@digiload.local" required autofocus/>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" name="password" placeholder="••••••••••" required/>
+    </div>
+    <button class="btn" type="submit">Sign In</button>
+  </form>
+</div>
+</body>
+</html>

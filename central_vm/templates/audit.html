@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — Digiload Pro{% endblock %}
+
+{% block content %}
+<div style="font-family:var(--display);font-weight:800;font-size:22px;margin-bottom:20px">Audit Log</div>
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">All Events (last 500)</span>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">{{ logs|length }} entries</span>
+  </div>
+  <table>
+    <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
+    <tbody>
+      {% for l in logs %}
+      <tr>
+        <td>{{ l.created_at.strftime('%d/%m %H:%M:%S') if l.created_at else '—' }}</td>
+        <td>{{ l.user_email or '—' }}</td>
+        <td class="td-main">{{ l.action }}</td>
+        <td>{{ l.target_type or '' }}{% if l.target_id %} {{ l.target_id[:8] }}...{% endif %}</td>
+        <td>{{ l.ip_address or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No audit events</div></div></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

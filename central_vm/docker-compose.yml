@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB:       ${DB_NAME:-digiload}
+      POSTGRES_USER:     ${DB_USER:-digiload}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-digiload}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  central-app:
+    build: .
+    environment:
+      DB_HOST:              postgres
+      DB_PORT:              5432
+      DB_NAME:              ${DB_NAME:-digiload}
+      DB_USER:              ${DB_USER:-digiload}
+      DB_PASSWORD:          ${DB_PASSWORD}
+      SECRET_KEY:           ${SECRET_KEY}
+      LICENSE_SECRET:       ${LICENSE_SECRET}
+      MQTT_HOST:            mosquitto
+      MQTT_PORT:            1883
+      CLIP_RETENTION_DAYS:  ${CLIP_RETENTION_DAYS:-30}
+      CLIPS_DIR:            /app/clips
+      REPORTS_DIR:          /app/reports
+      RELEASE_BASE_URL:     ${RELEASE_BASE_URL:-http://localhost:5001}
+    volumes:
+      - clips:/app/clips
+      - reports:/app/reports
+      - ./zed_box_releases:/app/releases   # app files served to ZED Boxes
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - central-app
+    restart: always
+
+volumes:
+  postgres-data:
+  clips:
+  reports:

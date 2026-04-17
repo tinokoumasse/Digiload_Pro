@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Admin — Digiload Pro{% endblock %}
+
+{% block content %}
+<div style="font-family:var(--display);font-weight:800;font-size:22px;margin-bottom:20px">Admin Console</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+  <!-- Users -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Users</span>
+      <button class="btn btn-solid btn-sm" onclick="document.getElementById('add-user-modal').classList.add('open')">+ Add User</button>
+    </div>
+    <table>
+      <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th></th></tr></thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td class="td-main">{{ u.email }}</td>
+          <td><span class="pill {% if u.role=='ADMIN' %}pill-active{% elif u.role=='SUPERVISOR' %}pill-done{% else %}pill-waiting{% endif %}">{{ u.role }}</span></td>
+          <td><span class="pill {% if u.active %}pill-online{% else %}pill-offline{% endif %}">{{ 'Active' if u.active else 'Locked' }}</span></td>
+          <td>{{ u.last_login.strftime('%d/%m %H:%M') if u.last_login else '—' }}</td>
+          <td>
+            {% if u.active %}
+            <button class="btn btn-red btn-sm" onclick="deactivateUser('{{ u.id }}')">Lock</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No users</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- API Keys -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">API Keys (WMS)</span>
+      <button class="btn btn-solid btn-sm" onclick="createApiKey()">+ Generate Key</button>
+    </div>
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th>Last Used</th></tr></thead>
+      <tbody>
+        {% for k in api_keys %}
+        <tr>
+          <td class="td-main">{{ k.name }}</td>
+          <td><span class="pill {% if k.active %}pill-online{% else %}pill-offline{% endif %}">{{ 'Active' if k.active else 'Revoked' }}</span></td>
+          <td>{{ k.last_used.strftime('%d/%m %H:%M') if k.last_used else 'Never' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No API keys</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Gates -->
+  <div class="card" style="grid-column:1/-1">
+    <div class="card-header">
+      <span class="card-title">Registered Gates</span>
+      <button class="btn btn-solid btn-sm" onclick="document.getElementById('add-gate-modal').classList.add('open')">+ Register Gate</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP</th><th>App</th><th>Agent</th><th>Last Heartbeat</th></tr></thead>
+      <tbody>
+        {% for g in gates %}
+        <tr>
+          <td>{{ g.id }}</td>
+          <td class="td-main">{{ g.name }}</td>
+          <td><span class="pill {% if g.status=='ONLINE' %}pill-online{% else %}pill-offline{% endif %}">{{ g.status }}</span></td>
+          <td>{{ g.last_heartbeat_ip or g.ip or '—' }}</td>
+          <td>{{ g.app_version or '—' }}</td>
+          <td>{{ g.agent_version or '—' }}</td>
+          <td>{{ g.last_heartbeat.strftime('%d/%m %H:%M') if g.last_heartbeat else '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No gates registered</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-backdrop" id="add-user-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add User</span>
+      <button class="modal-close" onclick="document.getElementById('add-user-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <input type="email" id="new-email" class="form-input" placeholder="user@company.com"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password (min 10 chars)</label>
+      <input type="password" id="new-pw" class="form-input" placeholder="••••••••••"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Role</label>
+      <select id="new-role" class="form-select">
+        <option value="OPERATOR">Operator (read-only)</option>
+        <option value="SUPERVISOR">Supervisor</option>
+        <option value="ADMIN">Admin</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-solid" onclick="createUser()" style="flex:1">Create</button>
+      <button class="btn btn-muted" onclick="document.getElementById('add-user-modal').classList.remove('open')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Gate Modal -->
+<div class="modal-backdrop" id="add-gate-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Register Gate</span>
+      <button class="modal-close" onclick="document.getElementById('add-gate-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Gate ID</label>
+      <input type="number" id="new-gate-id" class="form-input" placeholder="3" min="1"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Gate Name</label>
+      <input type="text" id="new-gate-name" class="form-input" placeholder="Quai Nord 3"/>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-solid" onclick="addGate()" style="flex:1">Register</button>
+      <button class="btn btn-muted" onclick="document.getElementById('add-gate-modal').classList.remove('open')">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+async function createUser() {
+  const r = await fetch('/api/admin/users', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      email: document.getElementById('new-email').value,
+      password: document.getElementById('new-pw').value,
+      role: document.getElementById('new-role').value
+    })
+  });
+  const d = await r.json();
+  d.ok ? (toast('User created','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function deactivateUser(id) {
+  if (!confirm('Lock this user account?')) return;
+  const r = await fetch(`/api/admin/users/${id}/deactivate`, {method:'POST'});
+  const d = await r.json();
+  d.ok ? (toast('User locked','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function createApiKey() {
+  const name = prompt('API key name (e.g. SAP EWM):');
+  if (!name) return;
+  const r = await fetch('/api/admin/api-keys', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    alert(`API Key created — save this now, it will not be shown again:\n\n${d.key}`);
+    setTimeout(() => location.reload(), 500);
+  } else {
+    toast(d.error||'Error','err');
+  }
+}
+
+async function addGate() {
+  const id   = parseInt(document.getElementById('new-gate-id').value);
+  const name = document.getElementById('new-gate-name').value.trim();
+  if (!id || !name) { toast('ID and name required','err'); return; }
+  const r = await fetch('/api/admin/gates', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, name})
+  });
+  const d = await r.json();
+  d.ok ? (toast('Gate registered','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+{% endblock %}

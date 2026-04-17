@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}{{ gate.name }} — Digiload Pro{% endblock %}
+
+{% block head %}
+<style>
+.gate-header{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+.gate-title{font-family:var(--display);font-weight:800;font-size:22px}
+.gate-grid{display:grid;grid-template-columns:340px 1fr;gap:14px}
+.gate-grid-right{display:flex;flex-direction:column;gap:14px}
+.metric-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.mc{background:var(--glass);border:1px solid var(--border);border-radius:var(--rsm);padding:14px;text-align:center;transition:all .2s}
+.mc:hover{background:var(--glass-hi);transform:translateY(-2px)}
+.mc-val{font-family:var(--display);font-weight:800;font-size:28px;color:var(--blue);line-height:1}
+.mc-lbl{font-family:var(--sans);font-size:9px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-top:4px}
+.mc-val.green{color:var(--green)}.mc-val.red{color:var(--red)}.mc-val.amber{color:var(--amber)}
+.preview-box{
+  background:#000;border-radius:var(--rsm);overflow:hidden;
+  aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
+  font-family:var(--sans);font-size:11px;color:var(--text3);cursor:pointer;
+}
+.preview-box img{width:100%;height:100%;object-fit:cover;display:none}
+.action-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.log-box{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--rsm);
+  padding:12px;font-family:var(--mono);font-size:10px;color:var(--green);
+  white-space:pre;overflow:auto;max-height:180px;line-height:1.6;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="gate-header">
+  <a href="/" class="btn btn-muted btn-sm">← Fleet</a>
+  <div>
+    <div class="gate-title">{{ gate.name }}</div>
+  </div>
+  <span class="pill pill-offline" id="gate-status-pill">{{ gate.status or 'OFFLINE' }}</span>
+  <span style="font-family:var(--mono);font-size:11px;color:var(--text3)" id="gate-ip">{{ gate.last_heartbeat_ip or gate.ip or '—' }}</span>
+</div>
+
+<div class="gate-grid">
+
+  <!-- LEFT: Status + actions -->
+  <div style="display:flex;flex-direction:column;gap:14px">
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Live Status</span></div>
+      <div class="card-body">
+        <div style="font-family:var(--display);font-weight:800;font-size:24px;margin-bottom:16px" id="gate-mode">{{ gate.app_mode or 'UNKNOWN' }}</div>
+        <div class="metric-row">
+          <div class="mc"><div class="mc-val" id="m-cpu">—</div><div class="mc-lbl">CPU %</div></div>
+          <div class="mc"><div class="mc-val" id="m-ram">—</div><div class="mc-lbl">RAM GB</div></div>
+          <div class="mc"><div class="mc-val" id="m-disk">—</div><div class="mc-lbl">Free GB</div></div>
+          <div class="mc"><div class="mc-val" id="m-cam">—</div><div class="mc-lbl">Camera</div></div>
+        </div>
+        <div style="margin-top:14px;font-family:var(--mono);font-size:10px;color:var(--text3);line-height:2">
+          <div>Agent  <span style="color:var(--text)" id="m-agent">{{ gate.agent_version or '—' }}</span></div>
+          <div>App    <span style="color:var(--text)" id="m-app">{{ gate.app_version or '—' }}</span></div>
+          <div>Uptime <span style="color:var(--text)" id="m-uptime">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    {% if user.role == 'ADMIN' %}
+    <div class="card">
+      <div class="card-header"><span class="card-title">Remote Actions</span></div>
+      <div class="card-body">
+        <div class="action-grid">
+          <button class="btn btn-blue" onclick="cmd('restart_app')">Restart App</button>
+          <button class="btn btn-blue" onclick="cmd('restart_wms')">Restart WMS</button>
+          <button class="btn btn-muted" onclick="cmd('clear_clips')">Clear Clips</button>
+          <button class="btn btn-red" onclick="if(confirm('Reboot ZED Box?'))cmd('reboot')">Reboot</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Camera Preview</span></div>
+      <div class="card-body" style="padding:12px">
+        <div class="preview-box" id="preview-box" onclick="togglePreview()">
+          <img id="preview-img" src=""/>
+          <span id="preview-hint">Click to load preview</span>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px">
+          <button class="btn btn-blue btn-sm" onclick="togglePreview()">Toggle Feed</button>
+          <button class="btn btn-muted btn-sm" onclick="openZoneEditor()">Edit Gate Zone</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Live Logs</span>
+        <button class="btn btn-muted btn-sm" onclick="loadLogs()">Refresh</button>
+      </div>
+      <div class="card-body" style="padding:12px">
+        <div class="log-box" id="log-box">Click refresh to load logs...</div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- RIGHT: Missions -->
+  <div class="gate-grid-right">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Missions</span>
+        {% if user.role != 'OPERATOR' %}
+        <button class="btn btn-solid btn-sm" onclick="document.getElementById('import-modal').classList.add('open')">+ Import</button>
+        {% endif %}
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>Progress</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for m in missions %}
+          <tr>
+            <td class="td-main">{{ m.name }}</td>
+            <td><span class="pill {% if m.status=='ACTIVE' %}pill-active{% elif m.status=='COMPLETED' %}pill-done{% else %}pill-waiting{% endif %}">{{ m.status }}</span></td>
+            <td><span style="font-family:var(--mono);font-size:11px">{{ m.loaded or 0 }}/{{ m.total_pallets }}</span></td>
+            <td style="display:flex;gap:4px">
+              {% if user.role != 'OPERATOR' %}
+                {% if m.status == 'WAITING' %}
+                <button class="btn btn-blue btn-sm" onclick="activate('{{ m.id }}')">Activate</button>
+                {% elif m.status == 'ACTIVE' %}
+                <button class="btn btn-red btn-sm" onclick="deactivate('{{ m.id }}')">Deactivate</button>
+                {% endif %}
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4"><div class="empty"><div class="empty-ring"></div><div class="empty-text">No missions</div></div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Import Modal -->
+<div class="modal-backdrop" id="import-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Import Mission</span>
+      <button class="modal-close" onclick="document.getElementById('import-modal').classList.remove('open')">✕</button>
+    </div>
+    <form id="import-form" enctype="multipart/form-data">
+      <input type="hidden" name="gate_id" value="{{ gate.id }}"/>
+      <div class="form-group">
+        <label class="form-label">Mission Name</label>
+        <input type="text" name="name" class="form-input" placeholder="DHL 14h truck" required/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">CSV File</label>
+        <input type="file" name="csv" class="form-input" accept=".csv" required style="padding:8px"/>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button type="button" class="btn btn-solid" onclick="importMission()" style="flex:1">Import</button>
+        <button type="button" class="btn btn-muted" onclick="document.getElementById('import-modal').classList.remove('open')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+const GATE_ID = {{ gate.id }};
+let previewOn = false;
+
+socket.on('fleet_update', data => {
+  const g = (data.gates||[]).find(x => x.gate_id === GATE_ID);
+  if (!g) return;
+  const online = g.status === 'ONLINE';
+  const pill = document.getElementById('gate-status-pill');
+  pill.textContent = g.status;
+  pill.className = `pill ${online ? 'pill-online' : 'pill-offline'}`;
+  document.getElementById('gate-mode').textContent = g.app_mode || '—';
+  document.getElementById('gate-ip').textContent = g.ip || '—';
+  document.getElementById('m-agent').textContent = g.agent_version || '—';
+  document.getElementById('m-app').textContent   = g.app_version   || '—';
+  const cpu  = document.getElementById('m-cpu');
+  const disk = document.getElementById('m-disk');
+  if (cpu)  { cpu.textContent  = g.cpu_pct  != null ? g.cpu_pct+'%' : '—'; cpu.className  = 'mc-val'+(g.cpu_pct>80?' amber':g.cpu_pct>95?' red':'');}
+  if (disk) { disk.textContent = g.disk_free_gb!=null ? parseFloat(g.disk_free_gb).toFixed(1) : '—'; disk.className = 'mc-val'+(g.disk_free_gb<5?' red':g.disk_free_gb<20?' amber':'');}
+  const ram = document.getElementById('m-ram');
+  if (ram) ram.textContent = g.ram_mb!=null ? (g.ram_mb/1024).toFixed(1) : '—';
+  const cam = document.getElementById('m-cam');
+  if (cam) { cam.textContent = !online ? '—' : g.camera_ok ? '✓' : '✕'; cam.className='mc-val'+(g.camera_ok?'':' red'); }
+  const up = document.getElementById('m-uptime');
+  if (up && g.uptime_s) {
+    const h=Math.floor(g.uptime_s/3600), m2=Math.floor((g.uptime_s%3600)/60);
+    up.textContent = `${h}h ${m2}m`;
+  }
+});
+
+function togglePreview() {
+  previewOn = !previewOn;
+  const img  = document.getElementById('preview-img');
+  const hint = document.getElementById('preview-hint');
+  if (previewOn) {
+    img.src = `/api/gates/${GATE_ID}/preview?t=${Date.now()}`;
+    img.style.display = 'block';
+    hint.style.display = 'none';
+  } else {
+    img.src = ''; img.style.display='none'; hint.style.display='';
+  }
+}
+
+async function cmd(c) {
+  const r = await fetch(`/api/gates/${GATE_ID}/command`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cmd:c})
+  });
+  const d = await r.json();
+  toast(d.ok ? `${c} executed` : (d.error||'Error'), d.ok ? 'ok' : 'err');
+}
+
+async function loadLogs() {
+  const r = await fetch(`/api/gates/${GATE_ID}/logs?n=50`);
+  const d = await r.json();
+  document.getElementById('log-box').textContent =
+    d.ok ? (d.lines||[]).join('\n') : (d.error||'Failed to load logs');
+}
+
+async function activate(id) {
+  const r = await fetch(`/api/missions/${id}/activate`,{method:'POST'});
+  const d = await r.json();
+  d.ok ? (toast('Activated','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function deactivate(id) {
+  const r = await fetch(`/api/missions/${id}/deactivate`,{method:'POST'});
+  const d = await r.json();
+  d.ok ? (toast('Deactivated','ok'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+async function importMission() {
+  const fd = new FormData(document.getElementById('import-form'));
+  const r  = await fetch('/api/missions/import', {method:'POST', body:fd});
+  const d  = await r.json();
+  d.ok ? (toast(`${d.count} pallets imported`,'ok'), document.getElementById('import-modal').classList.remove('open'), setTimeout(()=>location.reload(),800))
+       : toast(d.error||'Error','err');
+}
+
+function openZoneEditor() { toast('Zone editor — draw on the preview feed then save','info'); }
+{% endblock %}

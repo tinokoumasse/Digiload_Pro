@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Fleet Overview — Digiload Pro{% endblock %}
+
+{% block head %}
+<style>
+.fleet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.gate-card{
+  background:var(--glass);border:1px solid var(--border);border-radius:var(--r);
+  padding:18px;cursor:pointer;transition:all .2s ease;position:relative;overflow:hidden;
+}
+.gate-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px;transition:all .2s}
+.gate-card:hover{background:var(--glass-hi);transform:translateY(-2px);box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.gate-card.online::before{background:var(--green);box-shadow:0 0 10px rgba(48,209,88,.4)}
+.gate-card.offline::before{background:var(--text3)}
+.gate-card.armed::before,.gate-card.validated::before{background:var(--green)}
+.gate-card.standby::before,.gate-card.idle::before{background:var(--blue)}
+.gate-card.error::before{background:var(--red);animation:err-flash .5s infinite}
+@keyframes err-flash{0%,100%{opacity:1}50%{opacity:.3}}
+.gc-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
+.gc-name{font-family:var(--display);font-weight:700;font-size:14px;color:var(--text)}
+.gc-mode{font-family:var(--sans);font-size:10px;font-weight:600;padding:3px 10px;border-radius:20px;letter-spacing:1px;text-transform:uppercase}
+.mode-IDLE{background:rgba(122,144,184,.1);color:var(--text3)}
+.mode-STANDBY{background:var(--blue-dim);color:var(--blue)}
+.mode-ARMED{background:rgba(48,209,88,.15);color:var(--green)}
+.mode-VALIDATED{background:rgba(48,209,88,.2);color:var(--green)}
+.mode-ERROR_SSCC,.mode-ERROR_FORKLIFT{background:rgba(255,69,58,.15);color:var(--red)}
+.mode-UNKNOWN,.mode-OFFLINE{background:rgba(122,144,184,.08);color:var(--text3)}
+.gc-prog{margin:10px 0}
+.gc-prog-bar{height:3px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+.gc-prog-fill{height:100%;border-radius:2px;background:var(--blue);transition:width .6s}
+.gc-prog-lbl{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--text3);margin-bottom:4px}
+.gc-metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:10px}
+.gc-metric{text-align:center}
+.gc-metric-val{font-family:var(--display);font-weight:700;font-size:16px;color:var(--text)}
+.gc-metric-lbl{font-family:var(--sans);font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase}
+.gc-metric-val.warn{color:var(--amber)}
+.gc-metric-val.err{color:var(--red)}
+.fleet-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.fleet-title{font-family:var(--display);font-weight:800;font-size:22px;color:var(--text)}
+.fleet-sub{font-family:var(--sans);font-size:11px;font-weight:300;color:var(--text3);margin-top:2px}
+.fleet-stats{display:flex;gap:20px;align-items:center}
+.fstat{text-align:center}
+.fstat-n{font-family:var(--display);font-weight:800;font-size:28px;color:var(--blue)}
+.fstat-l{font-family:var(--sans);font-size:10px;color:var(--text3);letter-spacing:1px;text-transform:uppercase}
+.fstat-n.green{color:var(--green)}
+.fstat-n.red{color:var(--red)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="fleet-header">
+  <div>
+    <div class="fleet-title">Fleet Overview</div>
+    <div class="fleet-sub" id="fleet-sub">Connecting to gates...</div>
+  </div>
+  <div class="fleet-stats">
+    <div class="fstat"><div class="fstat-n" id="fs-total">{{ gates|length }}</div><div class="fstat-l">Gates</div></div>
+    <div class="fstat"><div class="fstat-n green" id="fs-online">0</div><div class="fstat-l">Online</div></div>
+    <div class="fstat"><div class="fstat-n" id="fs-active">0</div><div class="fstat-l">Active</div></div>
+    <div class="fstat"><div class="fstat-n red" id="fs-offline">0</div><div class="fstat-l">Offline</div></div>
+  </div>
+</div>
+
+{% if not gates %}
+<div class="card">
+  <div class="empty">
+    <div class="empty-ring"></div>
+    <div class="empty-text">No gates configured</div>
+    {% if user.role == 'ADMIN' %}
+    <button class="btn btn-blue" onclick="document.getElementById('add-gate-modal').classList.add('open')">+ Add Gate</button>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="fleet-grid" id="fleet-grid">
+  {% for gate in gates %}
+  <div class="gate-card offline" id="gc-{{ gate.id }}" onclick="window.location='/gate/{{ gate.id }}'">
+    <div class="gc-top">
+      <div class="gc-name">{{ gate.name }}</div>
+      <div class="gc-mode mode-OFFLINE" id="gm-{{ gate.id }}">OFFLINE</div>
+    </div>
+    <div class="gc-prog">
+      <div class="gc-prog-lbl">
+        <span id="gp-lbl-{{ gate.id }}">—</span>
+        <span id="gp-pct-{{ gate.id }}">—</span>
+      </div>
+      <div class="gc-prog-bar"><div class="gc-prog-fill" id="gp-fill-{{ gate.id }}" style="width:0%"></div></div>
+    </div>
+    <div class="gc-metrics">
+      <div class="gc-metric">
+        <div class="gc-metric-val" id="gmet-cpu-{{ gate.id }}">—</div>
+        <div class="gc-metric-lbl">CPU</div>
+      </div>
+      <div class="gc-metric">
+        <div class="gc-metric-val" id="gmet-disk-{{ gate.id }}">—</div>
+        <div class="gc-metric-lbl">Disk GB</div>
+      </div>
+      <div class="gc-metric">
+        <div class="gc-metric-val" id="gmet-cam-{{ gate.id }}">—</div>
+        <div class="gc-metric-lbl">Camera</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Add Gate Modal -->
+<div class="modal-backdrop" id="add-gate-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Register Gate</span>
+      <button class="modal-close" onclick="document.getElementById('add-gate-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Gate ID</label>
+      <input type="number" id="new-gate-id" class="form-input" placeholder="3" min="1"/>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Gate Name</label>
+      <input type="text" id="new-gate-name" class="form-input" placeholder="Quai Nord 3"/>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-solid" onclick="addGate()" style="flex:1">Register</button>
+      <button class="btn btn-muted" onclick="document.getElementById('add-gate-modal').classList.remove('open')">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+// Fleet state
+const gateState = {};
+
+socket.on('fleet_update', data => {
+  const gates = data.gates || [];
+  let online=0, active=0, offline=0;
+  gates.forEach(g => {
+    gateState[g.gate_id] = g;
+    updateGateCard(g);
+    if (g.status === 'ONLINE') online++;
+    else offline++;
+    if (g.app_mode && !['IDLE','UNKNOWN'].includes(g.app_mode) && g.status === 'ONLINE') active++;
+  });
+  document.getElementById('fs-online').textContent  = online;
+  document.getElementById('fs-active').textContent  = active;
+  document.getElementById('fs-offline').textContent = offline;
+  document.getElementById('fleet-sub').textContent  =
+    `${online} online · ${offline} offline · last update ${new Date().toTimeString().substring(0,8)}`;
+});
+
+function updateGateCard(g) {
+  const id   = g.gate_id;
+  const card = document.getElementById(`gc-${id}`);
+  if (!card) return;
+  const mode   = g.app_mode || 'UNKNOWN';
+  const online = g.status === 'ONLINE';
+
+  // Card border class
+  card.className = 'gate-card ' + (online ? mode.toLowerCase() : 'offline');
+
+  // Mode badge
+  const mb = document.getElementById(`gm-${id}`);
+  if (mb) { mb.textContent = online ? mode : 'OFFLINE'; mb.className = `gc-mode mode-${online ? mode : 'OFFLINE'}`; }
+
+  // Metrics
+  const cpu  = document.getElementById(`gmet-cpu-${id}`);
+  const disk = document.getElementById(`gmet-disk-${id}`);
+  const cam  = document.getElementById(`gmet-cam-${id}`);
+  if (cpu) {
+    const v = g.cpu_pct;
+    cpu.textContent = v != null ? v + '%' : '—';
+    cpu.className   = 'gc-metric-val' + (v > 80 ? ' warn' : v > 95 ? ' err' : '');
+  }
+  if (disk) {
+    const v = g.disk_free_gb;
+    disk.textContent = v != null ? parseFloat(v).toFixed(1) : '—';
+    disk.className   = 'gc-metric-val' + (v < 5 ? ' err' : v < 20 ? ' warn' : '');
+  }
+  if (cam)  cam.textContent = !online ? '—' : g.camera_ok ? '✓' : '✕';
+
+  // Progress (if active tour)
+  const label = document.getElementById(`gp-lbl-${id}`);
+  const pct   = document.getElementById(`gp-pct-${id}`);
+  const fill  = document.getElementById(`gp-fill-${id}`);
+  if (g.active_tour_id) {
+    if (label) label.textContent = 'Mission active';
+    if (pct)   pct.textContent   = '';
+    if (fill)  fill.style.width  = '100%';
+    fill.style.background = 'var(--blue)';
+  } else {
+    if (label) label.textContent = online ? 'No active mission' : 'Offline';
+    if (pct)   pct.textContent   = '';
+    if (fill)  fill.style.width  = '0%';
+  }
+}
+
+async function addGate() {
+  const id   = parseInt(document.getElementById('new-gate-id').value);
+  const name = document.getElementById('new-gate-name').value.trim();
+  if (!id || !name) { toast('Gate ID and name required', 'err'); return; }
+  const r = await fetch('/api/admin/gates', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({id, name})
+  });
+  const d = await r.json();
+  d.ok ? (toast('Gate registered', 'ok'), setTimeout(() => location.reload(), 800))
+       : toast(d.error || 'Error', 'err');
+}
+{% endblock %}
