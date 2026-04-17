@@ -1,0 +1,20 @@
+[Unit]
+Description=Digiload Pro Gate Application
+Documentation=https://github.com/tinokoumasse/Digiload_Pro
+After=network.target digiload-agent.service
+Requires=digiload-agent.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/digiload
+ExecStart=/usr/bin/python3 /opt/digiload/digiload_pro.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/digiload/app.log
+StandardError=append:/var/log/digiload/app.log
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target

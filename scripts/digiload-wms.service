@@ -1,18 +1,18 @@
 [Unit]
-Description=Digiload Fleet Agent
+Description=Digiload WMS Connector
 Documentation=https://github.com/tinokoumasse/Digiload_Pro
-After=network.target
+After=network.target digiload-agent.service
 Wants=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/digiload
-ExecStart=/usr/bin/python3 /opt/digiload/agent.py
+ExecStart=/usr/bin/python3 /opt/digiload/wms_connector.py
 Restart=always
 RestartSec=5
-StandardOutput=append:/var/log/digiload/agent.log
-StandardError=append:/var/log/digiload/agent.log
+StandardOutput=append:/var/log/digiload/wms.log
+StandardError=append:/var/log/digiload/wms.log
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
