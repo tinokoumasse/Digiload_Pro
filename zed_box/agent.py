@@ -431,7 +431,76 @@ _plog.getLogger("werkzeug").setLevel(_plog.ERROR)
 
 app = Flask("digiload_agent")
 
-@app.route("/status")
+import queue
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DRIVER SSE STATE (DL-028 — tablet connects directly, no VM)
+# ─────────────────────────────────────────────────────────────────────────────
+# Connected driver tablet SSE clients — one queue per connection
+_driver_clients: list = []
+_driver_lock    = threading.Lock()
+_last_state     = {"mode": None, "tour": None, "sscc": None}
+
+def _push_driver_event(mode, tour, sscc, loaded=0, total=0):
+    """Push state update to all connected driver tablets."""
+    import json as _json
+    payload = _json.dumps({
+        "mode":    mode,
+        "tour_id": tour,
+        "sscc":    sscc,
+        "loaded":  loaded,
+        "total":   total,
+        "gate_id": cfg.gate_id,
+        "ts":      datetime.utcnow().isoformat() + "Z",
+    })
+    data = f"data: {payload}\n\n"
+    with _driver_lock:
+        dead = []
+        for q in _driver_clients:
+            try:
+                q.put_nowait(data)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            _driver_clients.remove(q)
+
+def _driver_poll_loop():
+    """
+    Polls SQLite every 500ms for state changes.
+    Pushes SSE event to all connected tablets when state changes.
+    VM-independent — works even if central VM is down.
+    """
+    global _last_state
+    while True:
+        try:
+            mode, tour, sscc = read_app_state()
+            # Also get progress if mission active
+            loaded, total = 0, 0
+            if tour:
+                try:
+                    conn = sqlite3.connect(_DB_FILE, timeout=2)
+                    row  = conn.execute(
+                        "SELECT COUNT(*) FROM pallets WHERE tour_id=? AND status='LOADED'",
+                        (tour,)
+                    ).fetchone()
+                    tot = conn.execute(
+                        "SELECT COUNT(*) FROM pallets WHERE tour_id=?",
+                        (tour,)
+                    ).fetchone()
+                    conn.close()
+                    loaded = row[0] if row else 0
+                    total  = tot[0] if tot else 0
+                except Exception:
+                    pass
+
+            current = {"mode": mode, "tour": tour, "sscc": sscc}
+            if current != _last_state:
+                _last_state = current
+                _push_driver_event(mode, tour, sscc, loaded, total)
+        except Exception as e:
+            log.debug(f"[driver_poll] {e}")
+        time.sleep(0.5)
+
 def status():
     mode, tour, sscc = read_app_state()
     return jsonify({
@@ -455,7 +524,84 @@ def status():
 def health():
     return jsonify({"ok": True, "gate_id": cfg.gate_id})
 
-@app.route("/agent/apply-config", methods=["POST"])
+# ─────────────────────────────────────────────────────────────────────────────
+# DRIVER TABLET ENDPOINTS — PUBLIC (no secret required, DL-028)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/driver/stream")
+def driver_stream():
+    """
+    SSE stream for driver tablet — pushed on every state change.
+    Tablet connects here directly — no VM in the loop.
+    Public: no authentication required.
+    """
+    q = queue.Queue(maxsize=20)
+    with _driver_lock:
+        _driver_clients.append(q)
+
+    def generate():
+        # Send current state immediately on connect
+        mode, tour, sscc = read_app_state()
+        import json as _json
+        yield f"data: {_json.dumps({'mode':mode,'tour_id':tour,'sscc':sscc,'gate_id':cfg.gate_id})}\n\n"
+        # Then stream changes
+        while True:
+            try:
+                data = q.get(timeout=25)
+                yield data
+            except queue.Empty:
+                yield ": keepalive\n\n"   # prevents proxy timeout
+            except GeneratorExit:
+                break
+        with _driver_lock:
+            try: _driver_clients.remove(q)
+            except ValueError: pass
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering":"no",       # disable nginx buffering
+            "Connection":       "keep-alive",
+        }
+    )
+
+@app.route("/driver/status")
+def driver_status():
+    """
+    Polling fallback for tablets that don't support SSE.
+    Public: no authentication required.
+    """
+    mode, tour, sscc = read_app_state()
+    loaded, total = 0, 0
+    if tour:
+        try:
+            conn = sqlite3.connect(_DB_FILE, timeout=2)
+            row  = conn.execute(
+                "SELECT COUNT(*) FROM pallets WHERE tour_id=? AND status='LOADED'",
+                (tour,)
+            ).fetchone()
+            tot  = conn.execute(
+                "SELECT COUNT(*) FROM pallets WHERE tour_id=?",
+                (tour,)
+            ).fetchone()
+            conn.close()
+            loaded = row[0] if row else 0
+            total  = tot[0]  if tot  else 0
+        except Exception:
+            pass
+    return jsonify({
+        "gate_id":  cfg.gate_id,
+        "gate_name":cfg.gate_name,
+        "mode":     mode,
+        "tour_id":  tour,
+        "sscc":     sscc,
+        "loaded":   loaded,
+        "total":    total,
+        "ts":       datetime.utcnow().isoformat() + "Z",
+    })
+
+
 @require_secret
 def apply_config():
     data = request.get_json(silent=True) or {}
@@ -575,8 +721,9 @@ def run():
     load_config()
     log.info(f"[agent] Gate {cfg.gate_id} — {cfg.gate_name}")
     log.info(f"[agent] Central: {cfg.central_url or '(not configured)'}")
-    threading.Thread(target=heartbeat_loop,     daemon=True).start()
-    threading.Thread(target=_config_reload_loop, daemon=True).start()
+    threading.Thread(target=heartbeat_loop,      daemon=True).start()
+    threading.Thread(target=_config_reload_loop,  daemon=True).start()
+    threading.Thread(target=_driver_poll_loop,    daemon=True).start()
     log.info("[agent] Port 5002 — ready")
     app.run(host="0.0.0.0", port=5002, debug=False, threaded=True)
 

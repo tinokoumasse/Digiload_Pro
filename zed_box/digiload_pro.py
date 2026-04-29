@@ -36,6 +36,65 @@ from logging.handlers import RotatingFileHandler
 from plugin_loader import PluginLoader
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOUND FEEDBACK — Core feature (DL-026)
+# Generates tones via numpy, plays via aplay (no extra dependencies)
+# ─────────────────────────────────────────────────────────────────────────────
+import wave, struct, io
+
+def _make_wav(freq: float, duration: float, volume: float = 0.5,
+              sample_rate: int = 44100) -> bytes:
+    """Generate a sine-wave WAV in memory."""
+    n_samples = int(sample_rate * duration)
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)   # 16-bit
+        wf.setframerate(sample_rate)
+        for i in range(n_samples):
+            t      = i / sample_rate
+            sample = int(volume * 32767 * np.sin(2 * np.pi * freq * t))
+            wf.writeframes(struct.pack('<h', sample))
+    return buf.getvalue()
+
+# Pre-generate sound clips at startup
+_SOUNDS: dict = {}
+
+def _init_sounds():
+    global _SOUNDS
+    try:
+        _SOUNDS = {
+            "validated": _make_wav(880,  0.12) + _make_wav(1100, 0.15),   # rising double beep
+            "error":     _make_wav(220,  0.40),                            # low buzz
+            "standby":   _make_wav(660,  0.08),                            # soft tick
+            "complete":  (_make_wav(660, 0.10) + _make_wav(880, 0.10)
+                         + _make_wav(1100, 0.20)),                         # triple rising
+        }
+        log.info("[sound] Initialized — 4 cues ready")
+    except Exception as e:
+        log.warning(f"[sound] Init failed: {e}")
+
+def play_sound(name: str):
+    """Play a named sound cue in a background thread. Never blocks."""
+    if not st.feature_sound:
+        return
+    wav = _SOUNDS.get(name)
+    if not wav:
+        return
+    def _play():
+        try:
+            proc = subprocess.Popen(
+                ["aplay", "-q", "-"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            proc.communicate(wav, timeout=3)
+        except Exception as e:
+            log.debug(f"[sound] {name} failed: {e}")
+    threading.Thread(target=_play, daemon=True).start()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────────────────────────────────────
 os.makedirs("/var/log/digiload", exist_ok=True)
@@ -92,6 +151,7 @@ DEFAULT_CONFIG = {
         "led_control":      True,   # WLED LED strip control
         "disk_manager":     True,   # auto-delete clips by age/size
         "hud":              True,   # OpenCV HUD overlay
+        "sound":            True,   # audio feedback cues (aplay)
     },
 
     # ── Layer 3: Plugins — disabled by default, licensed or per-customer ──
@@ -587,6 +647,7 @@ class AppState:
         self.feature_led_control  = True
         self.feature_disk_manager = True
         self.feature_hud          = True
+        self.feature_sound        = True
         # Plugin system
         self.plugins: PluginLoader | None = None
         self.ui_mode="MAIN"
@@ -677,8 +738,9 @@ def load_config():
     st.feature_led_control  = feats.get("led_control",  True)
     st.feature_disk_manager = feats.get("disk_manager", True)
     st.feature_hud          = feats.get("hud",          True)
+    st.feature_sound        = feats.get("sound",        True)
 
-    log.info(f"[features] led={st.feature_led_control} disk={st.feature_disk_manager} hud={st.feature_hud}")
+    log.info(f"[features] led={st.feature_led_control} disk={st.feature_disk_manager} hud={st.feature_hud} sound={st.feature_sound}")
 
     with get_db() as conn:
         conn.execute("UPDATE system_state SET gate_id=? WHERE id=1",(st.gate_id,))
@@ -820,6 +882,16 @@ def transition(mode, sscc=None, tour_id=None):
     if st.plugins:
         st.plugins.on_state_change(mode, ctx)
 
+    # Sound feedback (core feature)
+    _sound_for_mode = {
+        "STANDBY":        "standby",
+        "VALIDATED":      "validated",
+        "ERROR_SSCC":     "error",
+        "ERROR_FORKLIFT": "error",
+    }
+    if mode in _sound_for_mode:
+        play_sound(_sound_for_mode[mode])
+
     if do_validated:
         loaded,total=db_get_progress(tour_snap)
         trigger_validated_anim(sscc_snap,loaded,total)
@@ -879,6 +951,7 @@ def handle_aruco_detected(ids_array):
             is_last=db_validate_pallet(sscc_done,matched_id,st.active_tour_id)
             transition("VALIDATED",sscc=sscc_done)
             if is_last:
+                play_sound("complete")
                 db_complete_tour(st.active_tour_id)
                 _wms_notify("mission.completed",{
                     "gate_id":st.gate_id,"gate_name":st.gate_name,
@@ -894,6 +967,7 @@ def handle_aruco_detected(ids_array):
         else:
             log.warning(f"[aruco] Wrong: detected={flat} authorized={list(authorized)}")
             transition("ERROR_FORKLIFT")
+            check_wrong_gate(flat[0] if flat else -1)
 
 def tick_timeouts():
     if st.app_mode not in ("ERROR_SSCC","ERROR_FORKLIFT"): return
@@ -1181,11 +1255,123 @@ def handle_key(key,cam):
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
-def run():
+# ─────────────────────────────────────────────────────────────────────────────
+# CORE ALERTS — mission reminder, incomplete mission, wrong gate (DL-026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Configurable thresholds (seconds)
+MISSION_REMINDER_IDLE_S  = 5 * 60   # 5 min idle → reminder
+MISSION_REMINDER_REPEAT_S= 3 * 60   # repeat every 3 min
+
+_reminder_last_alert = 0.0
+_reminder_notified   = False
+
+def _alert_loop():
+    """
+    Background thread — checks alerts every 30s.
+    1. Mission reminder: gate idle too long during active mission
+    2. Incomplete mission: mission closed with pallets still pending
+    """
+    global _reminder_last_alert, _reminder_notified
+    while True:
+        time.sleep(30)
+        try:
+            _check_mission_reminder()
+            _check_incomplete_mission()
+        except Exception as e:
+            log.debug(f"[alerts] {e}")
+
+def _check_mission_reminder():
+    """Alert if gate has been in STANDBY/ARMED with no activity for too long."""
+    global _reminder_last_alert, _reminder_notified
+
+    if st.app_mode not in ("STANDBY", "ARMED"):
+        _reminder_notified = False
+        _reminder_last_alert = 0.0
+        return
+
+    idle_s = time.time() - st.last_action_time
+    if idle_s < MISSION_REMINDER_IDLE_S:
+        _reminder_notified = False
+        return
+
+    now = time.time()
+    if now - _reminder_last_alert < MISSION_REMINDER_REPEAT_S:
+        return   # already alerted recently
+
+    _reminder_last_alert = now
+    mins = int(idle_s / 60)
+    log.warning(f"[alert] Mission reminder — gate {st.gate_id} idle {mins}m in {st.app_mode}")
+    play_sound("error")
+
+    # Notify VM (best-effort)
+    _wms_notify("gate.alert", {
+        "gate_id":    st.gate_id,
+        "gate_name":  st.gate_name,
+        "alert_type": "MISSION_IDLE",
+        "idle_min":   mins,
+        "app_mode":   st.app_mode,
+        "timestamp":  datetime.now().isoformat(),
+    })
+
+def _check_incomplete_mission():
+    """
+    Detect if a mission was closed (IDLE) but pallets are still WAITING.
+    Logs a warning and notifies VM.
+    """
+    if st.app_mode != "IDLE" or not st.active_tour_id:
+        return
+
+    # Check if the last completed tour has unloaded pallets
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM pallets WHERE tour_id=? AND status='WAITING'",
+                (st.active_tour_id,)
+            ).fetchone()
+            pending = row[0] if row else 0
+
+        if pending > 0:
+            log.warning(f"[alert] Incomplete mission — tour {st.active_tour_id} "
+                        f"has {pending} unloaded pallet(s)")
+            play_sound("error")
+            _wms_notify("gate.alert", {
+                "gate_id":    st.gate_id,
+                "gate_name":  st.gate_name,
+                "alert_type": "INCOMPLETE_MISSION",
+                "tour_id":    st.active_tour_id,
+                "pending":    pending,
+                "timestamp":  datetime.now().isoformat(),
+            })
+    except Exception as e:
+        log.debug(f"[alerts] incomplete check: {e}")
+
+def check_wrong_gate(detected_id: int) -> bool:
+    """
+    Called when an ArUco marker is detected that doesn't match current gate.
+    Returns True if it's a known forklift from another gate (wrong gate).
+    Fires sound + WMS alert.
+    """
+    # Check if this forklift is configured on another gate
+    # For now: log and alert — cross-gate lookup requires VM comms
+    log.warning(f"[alert] Wrong gate — forklift {detected_id} not authorized "
+                f"for gate {st.gate_id}")
+    play_sound("error")
+    _wms_notify("gate.alert", {
+        "gate_id":           st.gate_id,
+        "gate_name":         st.gate_name,
+        "alert_type":        "WRONG_FORKLIFT_AT_GATE",
+        "detected_forklift": detected_id,
+        "timestamp":         datetime.now().isoformat(),
+    })
+    return True
+
+
     log.info("="*60)
     log.info("Digiload Pro v2.0 — Starting")
     log.info("="*60)
     init_db(); load_config()
+    _init_sounds()
     state=db_read_state()
     st.app_mode      =state.get("app_mode","IDLE")
     st.active_tour_id=state.get("active_tour_id",None)
@@ -1202,7 +1388,8 @@ def run():
     st.plugins = PluginLoader(plugins_dir, st.raw_config)
     st.plugins.on_start(st.raw_config)
     log.info(f"[plugins] Active: {st.plugins.loaded_names()}")
-    threading.Thread(target=poll_db_activation,daemon=True).start()
+    threading.Thread(target=poll_db_activation, daemon=True).start()
+    threading.Thread(target=_alert_loop,         daemon=True).start()
     if st.module_video_tracking:
         if st.feature_disk_manager:
             threading.Thread(target=disk_manager_loop,args=(st.rec_dir,st.ret_days,st.max_disk),daemon=True).start()

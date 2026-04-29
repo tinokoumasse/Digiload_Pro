@@ -20,10 +20,10 @@
             "fps": 60
         },
         "secondary": {
-            "enabled": false,
+            "enabled": true,
             "serial": 0,
-            "resolution": "HD720",
-            "fps": 30
+            "resolution": "HD1080",
+            "fps": 60
         },
         "auto_exposure": true,
         "exposure": 30,
@@ -31,7 +31,7 @@
     },
     "recording": {
         "output_dir": "clips",
-        "pre_seconds": 10,
+        "pre_seconds": 5,
         "post_seconds": 5,
         "buffer_fps": 30,
         "retention_days": 30,

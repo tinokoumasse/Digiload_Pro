@@ -1297,6 +1297,112 @@ def deploy_job_status(job_id):
     return jsonify({"ok": True, **job})
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ── DRIVER VIEW (DL-024) ──────────────────────────────────────────────────────
+# Public — no login required
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/gate/<int:gate_id>/driver")
+def driver_view(gate_id):
+    gate = _q("SELECT * FROM gates WHERE id=%s", (gate_id,), fetchone=True)
+    gate_name  = gate["name"] if gate else f"Gate {gate_id}"
+    driver_url = request.url_root.rstrip("/") + f"/gate/{gate_id}/driver"
+
+    # ZED Box IP from last heartbeat — tablet connects directly (DL-028)
+    with _gate_lock:
+        state  = _gate_state.get(gate_id, {})
+    zed_ip = state.get("ip", "")
+    zed_url = f"http://{zed_ip}:5002" if zed_ip else ""
+
+    return render_template("driver.html",
+                           gate_id=gate_id,
+                           gate_name=gate_name,
+                           driver_url=driver_url,
+                           zed_url=zed_url)
+
+@app.route("/gate/<int:gate_id>/qr")
+def gate_qr(gate_id):
+    gate = _q("SELECT * FROM gates WHERE id=%s", (gate_id,), fetchone=True)
+    gate_name  = gate["name"] if gate else f"Gate {gate_id}"
+    driver_url = request.url_root.rstrip("/") + f"/gate/{gate_id}/driver"
+    return render_template("qr.html",
+                           gate_id=gate_id,
+                           gate_name=gate_name,
+                           driver_url=driver_url)
+
+@app.route("/gate/<int:gate_id>/driver/activate", methods=["POST"])
+def driver_activate(gate_id):
+    """
+    Driver activates a mission by scanning forklift ID + WMS order number.
+    DL-023: dynamic forklift assignment — no pre-assignment needed.
+    Public endpoint — no login required.
+    """
+    data        = request.get_json(silent=True) or {}
+    forklift_id = str(data.get("forklift_id", "")).strip()
+    mission_ref = str(data.get("mission_ref",  "")).strip()
+
+    if not forklift_id:
+        return jsonify({"ok": False, "error": "Forklift ID required"}), 400
+    if not mission_ref:
+        return jsonify({"ok": False, "error": "Mission reference required"}), 400
+
+    # Find mission by WMS order number or internal ID on this gate
+    mission = _q("""SELECT * FROM missions
+                    WHERE (wms_mission_id=%s OR id::text=%s)
+                    AND gate_id=%s AND status='WAITING'
+                    ORDER BY created_at DESC LIMIT 1""",
+                 (mission_ref, mission_ref, gate_id), fetchone=True)
+
+    # Not found — check if mission exists on another gate (wrong gate detection)
+    if not mission:
+        other = _q("""SELECT gate_id FROM missions
+                      WHERE (wms_mission_id=%s OR id::text=%s)
+                      AND status='WAITING' LIMIT 1""",
+                   (mission_ref, mission_ref), fetchone=True)
+        if other:
+            return jsonify({
+                "ok":           False,
+                "error":        "Mission is assigned to a different gate",
+                "correct_gate": other["gate_id"]
+            }), 409
+        return jsonify({"ok": False, "error": "Mission not found"}), 404
+
+    # Check no other mission active on this gate
+    active = _q("SELECT id FROM missions WHERE gate_id=%s AND status='ACTIVE'",
+                (gate_id,), fetchone=True)
+    if active:
+        return jsonify({"ok": False, "error": "Gate already has an active mission"}), 409
+
+    # Activate mission
+    _q("UPDATE missions SET status='ACTIVE', activated_at=now() WHERE id=%s",
+       (mission["id"],))
+
+    # Push session forklift_id to ZED Box agent (DL-023)
+    # Sets authorized forklift for this session only — not saved to config.json
+    _push_to_agent(gate_id, "/agent/apply-config", {
+        "config":      {"system": {"session_forklift_id": forklift_id}},
+        "restart_app": False
+    })
+
+    pallet_count = _q("SELECT COUNT(*) as n FROM pallets WHERE mission_id=%s",
+                      (mission["id"],), fetchone=True)
+    total = pallet_count["n"] if pallet_count else 0
+
+    _audit("mission.driver_activated",
+           target_type="mission", target_id=mission["id"],
+           details={"gate_id": gate_id, "forklift_id": forklift_id, "mission_ref": mission_ref})
+
+    log.info(f"[driver] Gate {gate_id} forklift={forklift_id} mission={mission['name']} activated")
+
+    return jsonify({
+        "ok":            True,
+        "mission_id":    str(mission["id"]),
+        "mission_name":  mission["name"],
+        "total_pallets": total,
+        "loaded":        0,
+        "forklift_id":   forklift_id,
+    })
+
+
 @app.route("/install")
 def serve_install_script():
     """
@@ -1309,13 +1415,13 @@ def serve_install_script():
         return "Install script not found on server", 404
     with open(install_path, "r") as f:
         content = f.read()
-    # Inject the VM IP so ZED Boxes can find home
     vm_host = request.host.split(":")[0]
     content = content.replace(
         "CENTRAL_URL=\"http://${CENTRAL_IP}:5001\"",
         f"CENTRAL_URL=\"http://{vm_host}:5001\""
     )
     return Response(content, mimetype="text/plain")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ── SOCKETIO ─────────────────────────────────────────────────────────────────

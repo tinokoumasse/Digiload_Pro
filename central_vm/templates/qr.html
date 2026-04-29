@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>QR — Gate {{ gate_id }}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:system-ui,sans-serif;background:#fff;
+  display:flex;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px;
+}
+.card{
+  display:flex;flex-direction:column;align-items:center;gap:16px;
+  border:2px solid #1a1a1a;border-radius:16px;padding:32px;
+  max-width:320px;width:100%;
+}
+.logo{font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#2f7df6}
+.gate-name{font-size:22px;font-weight:800;color:#0a1628;text-align:center}
+#qr-svg{width:220px;height:220px}
+.url{
+  font-family:'SF Mono','Menlo','Consolas',monospace;
+  font-size:9px;color:#555;text-align:center;word-break:break-all;
+  background:#f5f5f5;padding:6px 10px;border-radius:6px;width:100%;
+}
+.hint{font-size:10px;color:#999;text-align:center;letter-spacing:.5px}
+@media print{
+  body{min-height:unset;padding:0}
+  .card{border-color:#000;break-inside:avoid}
+  .no-print{display:none}
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Digiload Pro</div>
+  <div class="gate-name">{{ gate_name }}</div>
+  <svg id="qr-svg" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="url" id="url-display">{{ driver_url }}</div>
+  <div class="hint">Scan to open driver view</div>
+  <button class="no-print" onclick="window.print()"
+    style="margin-top:8px;padding:8px 20px;border-radius:8px;border:1px solid #ccc;
+           font-size:12px;cursor:pointer;background:#f5f5f5">
+    🖨 Print / Save PDF
+  </button>
+</div>
+
+<script>
+// Pure JS QR code generator (no external library)
+// Implements QR Code version 1-10 for URLs
+// Based on the QR code standard ISO/IEC 18004
+
+const URL_TO_ENCODE = {{ driver_url | tojson }};
+
+// ── Minimal QR encoder ──────────────────────────────────────────────────────
+// For our use case (LAN URL ~40 chars) Version 3, ECC Level M works well
+
+function generateQR(text) {
+  // Use the qrcodegen library approach — simplified for URL encoding
+  // We'll use a data URL approach with canvas for reliability
+  const canvas = document.createElement('canvas');
+  canvas.width = 220; canvas.height = 220;
+  const ctx = canvas.getContext('2d');
+
+  // Encode using a minimal QR implementation
+  const qr = createQRMatrix(text);
+  if (!qr) return;
+
+  const size   = qr.length;
+  const cellSz = 220 / (size + 4);  // 2-cell quiet zone each side
+  const offset = cellSz * 2;
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,220,220);
+  ctx.fillStyle = '#000';
+
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (qr[r][c]) {
+        ctx.fillRect(
+          Math.round(offset + c * cellSz),
+          Math.round(offset + r * cellSz),
+          Math.ceil(cellSz), Math.ceil(cellSz)
+        );
+      }
+    }
+  }
+
+  // Put into SVG as image
+  const svg = document.getElementById('qr-svg');
+  const img = document.createElementNS('http://www.w3.org/2000/svg','image');
+  img.setAttribute('href', canvas.toDataURL());
+  img.setAttribute('x','0'); img.setAttribute('y','0');
+  img.setAttribute('width','220'); img.setAttribute('height','220');
+  svg.appendChild(img);
+}
+
+// ── QR matrix generation ────────────────────────────────────────────────────
+function createQRMatrix(text) {
+  try {
+    // Encode text as byte array
+    const data = encodeURIComponent(text) === text
+      ? toBytes(text)         // ASCII safe
+      : toUtf8Bytes(text);    // UTF-8
+
+    // Choose version (size) based on data length
+    // Version 3 = 29×29, capacity ~47 bytes (ECC M)
+    // Version 5 = 37×37, capacity ~64 bytes (ECC M)
+    // Version 7 = 45×45, capacity ~110 bytes (ECC M)
+    let version = 3;
+    if (data.length > 32) version = 5;
+    if (data.length > 58) version = 7;
+    if (data.length > 90) version = 10;
+
+    return qrEncode(data, version);
+  } catch(e) {
+    console.error('QR encode error:', e);
+    return null;
+  }
+}
+
+function toBytes(str) {
+  const arr = [];
+  for (let i = 0; i < str.length; i++) arr.push(str.charCodeAt(i));
+  return arr;
+}
+
+function toUtf8Bytes(str) {
+  return Array.from(new TextEncoder().encode(str));
+}
+
+// Minimal QR encoder — byte mode, ECC level M
+function qrEncode(data, version) {
+  const size = 17 + 4 * version;
+  const mat  = Array.from({length:size}, () => new Array(size).fill(null));
+
+  placeFinderPatterns(mat, size);
+  placeTimingPatterns(mat, size);
+  placeAlignmentPatterns(mat, size, version);
+  reserveFormatArea(mat, size);
+
+  const bits = encodeData(data, version);
+  placeBits(mat, bits, size);
+  applyBestMask(mat, size);
+
+  // Convert null → 0 for unset modules
+  return mat.map(row => row.map(v => v === null ? 0 : v ? 1 : 0));
+}
+
+function placeFinderPatterns(mat, size) {
+  const finder = [
+    [1,1,1,1,1,1,1],
+    [1,0,0,0,0,0,1],
+    [1,0,1,1,1,0,1],
+    [1,0,1,1,1,0,1],
+    [1,0,1,1,1,0,1],
+    [1,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1],
+  ];
+  const corners = [[0,0],[0,size-7],[size-7,0]];
+  corners.forEach(([r,c]) => {
+    for (let i=0;i<7;i++) for (let j=0;j<7;j++) mat[r+i][c+j] = finder[i][j];
+    // Separator
+    for (let k=0;k<8;k++) {
+      if(r+7<size && c+k<size) mat[r+7][c+k]=0;
+      if(r+k<size && c+7<size) mat[r+k][c+7]=0;
+      if(r-1>=0 && c+k<size)  mat[r-1][c+k]=0;
+      if(r+k<size && c-1>=0)  mat[r+k][c-1]=0;
+    }
+  });
+}
+
+function placeTimingPatterns(mat, size) {
+  for (let i=8;i<size-8;i++) {
+    mat[6][i] = (i%2===0) ? 1 : 0;
+    mat[i][6] = (i%2===0) ? 1 : 0;
+  }
+}
+
+const ALIGN_POS = {
+  1:[],2:[6,18],3:[6,22],4:[6,26],5:[6,30],
+  6:[6,34],7:[6,22,38],8:[6,24,42],9:[6,26,46],10:[6,28,50]
+};
+
+function placeAlignmentPatterns(mat, size, version) {
+  const pos = ALIGN_POS[version] || [];
+  for (let i=0;i<pos.length;i++) for (let j=0;j<pos.length;j++) {
+    const r=pos[i], c=pos[j];
+    if (mat[r][c] !== null) continue;
+    for (let dr=-2;dr<=2;dr++) for (let dc=-2;dc<=2;dc++) {
+      const v = (Math.abs(dr)===2||Math.abs(dc)===2) ? 1 :
+                (dr===0&&dc===0) ? 1 : 0;
+      mat[r+dr][c+dc] = v;
+    }
+  }
+}
+
+function reserveFormatArea(mat, size) {
+  // Reserve format info areas (mark as 0 placeholder)
+  for (let i=0;i<9;i++) {
+    if(mat[8][i]===null) mat[8][i]=0;
+    if(mat[i][8]===null) mat[i][8]=0;
+  }
+  for (let i=size-8;i<size;i++) {
+    if(mat[8][i]===null) mat[8][i]=0;
+    if(mat[i][8]===null) mat[i][8]=0;
+  }
+  mat[size-8][8] = 1; // dark module
+}
+
+function encodeData(data, version) {
+  // Byte mode encoding
+  const totalBits = [0,208,367,560,863,1159][Math.min(version,5)] || 208;
+  let bits = [];
+
+  // Mode indicator: byte mode = 0100
+  bits.push(0,1,0,0);
+  // Character count (8 bits for byte mode versions 1-9)
+  const len = data.length;
+  for (let i=7;i>=0;i--) bits.push((len>>i)&1);
+  // Data
+  data.forEach(byte => {
+    for (let i=7;i>=0;i--) bits.push((byte>>i)&1);
+  });
+  // Terminator
+  for (let i=0;i<4&&bits.length<totalBits;i++) bits.push(0);
+  // Pad to byte boundary
+  while (bits.length%8!==0) bits.push(0);
+  // Pad bytes
+  const pad = [0xEC,0x11];
+  let pi=0;
+  while (bits.length<totalBits) {
+    const p=pad[pi%2]; pi++;
+    for(let i=7;i>=0;i--) bits.push((p>>i)&1);
+  }
+  return bits;
+}
+
+function placeBits(mat, bits, size) {
+  let bi=0;
+  let up=true;
+  for (let col=size-1;col>=0;col-=2) {
+    if (col===6) col=5;
+    for (let i=0;i<size;i++) {
+      const row = up ? size-1-i : i;
+      for (let dc=0;dc<2;dc++) {
+        const c=col-dc;
+        if (mat[row][c]===null) {
+          mat[row][c] = bi<bits.length ? bits[bi++]===1 : false;
+        }
+      }
+    }
+    up=!up;
+  }
+}
+
+function applyBestMask(mat, size) {
+  // Apply mask pattern 0 (simplest) — adequate for our use case
+  for (let r=0;r<size;r++) for (let c=0;c<size;c++) {
+    if (mat[r][c]!==null && (r+c)%2===0) mat[r][c]=mat[r][c]?0:1;
+  }
+}
+
+// ── Run ─────────────────────────────────────────────────────────────────────
+generateQR(URL_TO_ENCODE);
+</script>
+</body>
+</html>

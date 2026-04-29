@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>Digiload — Gate {{ gate_id }}</title>
+<script>
+// ZED Box agent URL injected by VM at render time
+// Tablet connects directly to ZED Box — VM not in loop (DL-028)
+const ZED_URL = {{ zed_url | tojson }};
+</script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --blue:#1a5fd4;--green:#1a9e46;--white:#f8faff;
+  --red:#c8201a;--amber:#b8880a;--grey:#1a2035;
+  --text-on-color:#ffffff;
+  --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'SF Mono','Menlo','Consolas',monospace;
+}
+html,body{height:100%;overflow:hidden;-webkit-text-size-adjust:100%}
+body{
+  font-family:var(--sans);background:var(--grey);color:#fff;
+  display:flex;flex-direction:column;
+  -webkit-font-smoothing:antialiased;
+  transition:background .4s ease;
+}
+
+/* ── STATE BACKGROUNDS ──────────────────────────────────────────────────── */
+body.state-idle      {background:#1a2035}
+body.state-waiting   {background:#1a2035}
+body.state-standby   {background:var(--blue)}
+body.state-armed     {background:var(--green)}
+body.state-validated {background:#e8f0ff;color:#0a1628}
+body.state-error     {background:var(--red)}
+body.state-done      {background:var(--green)}
+
+/* ── HEADER ─────────────────────────────────────────────────────────────── */
+#hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px;flex-shrink:0;
+  background:rgba(0,0,0,.2);
+}
+.hdr-gate{font-family:var(--sans);font-weight:700;font-size:14px;letter-spacing:1px;opacity:.9}
+.hdr-right{display:flex;align-items:center;gap:10px}
+.lang-btn{
+  font-family:var(--sans);font-size:11px;font-weight:600;padding:4px 10px;
+  border-radius:20px;border:1.5px solid rgba(255,255,255,.4);background:transparent;
+  color:rgba(255,255,255,.8);cursor:pointer;transition:all .2s;letter-spacing:.5px;
+}
+.lang-btn.active{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.8);color:#fff}
+body.state-validated .lang-btn{border-color:rgba(0,0,0,.3);color:rgba(0,0,0,.6)}
+body.state-validated .lang-btn.active{background:rgba(0,0,0,.1);border-color:rgba(0,0,0,.5);color:#0a1628}
+
+/* ── MAIN ───────────────────────────────────────────────────────────────── */
+#main{
+  flex:1;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  padding:16px;gap:16px;overflow:hidden;
+}
+
+/* ── STATE ICON ─────────────────────────────────────────────────────────── */
+.state-icon{
+  font-size:clamp(48px,12vw,80px);
+  line-height:1;user-select:none;
+  animation:none;
+}
+.state-icon.pulse{animation:icon-pulse .6s ease-in-out infinite alternate}
+.state-icon.shake{animation:icon-shake .5s ease}
+@keyframes icon-pulse{from{transform:scale(1)}to{transform:scale(1.12)}}
+@keyframes icon-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+
+/* ── STATE LABEL ────────────────────────────────────────────────────────── */
+.state-lbl{
+  font-family:var(--sans);font-weight:800;
+  font-size:clamp(22px,6vw,40px);
+  text-align:center;line-height:1.15;
+  text-shadow:0 2px 12px rgba(0,0,0,.2);
+}
+body.state-validated .state-lbl{color:#0a1628;text-shadow:none}
+
+/* ── PROGRESS ───────────────────────────────────────────────────────────── */
+#progress-wrap{
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  width:100%;max-width:360px;
+}
+.prog-nums{
+  font-family:var(--sans);font-weight:800;
+  font-size:clamp(36px,10vw,64px);
+  line-height:1;letter-spacing:-1px;
+}
+.prog-lbl{
+  font-family:var(--sans);font-size:12px;font-weight:600;
+  letter-spacing:2px;text-transform:uppercase;opacity:.8;
+}
+.prog-bar{
+  width:100%;height:10px;background:rgba(0,0,0,.2);
+  border-radius:5px;overflow:hidden;
+}
+.prog-fill{
+  height:100%;border-radius:5px;
+  background:rgba(255,255,255,.8);
+  transition:width .6s ease;
+}
+body.state-validated .prog-fill{background:var(--blue)}
+
+/* ── SCAN AREA ──────────────────────────────────────────────────────────── */
+#scan-area{
+  width:100%;max-width:420px;
+  background:rgba(0,0,0,.18);
+  border-radius:16px;padding:16px;
+}
+.scan-step-lbl{
+  font-family:var(--sans);font-size:11px;font-weight:700;
+  letter-spacing:2px;text-transform:uppercase;
+  opacity:.75;margin-bottom:10px;text-align:center;
+}
+.scan-input-row{display:flex;gap:8px;align-items:stretch}
+#scan-input{
+  flex:1;background:rgba(255,255,255,.15);
+  border:2px solid rgba(255,255,255,.4);border-radius:10px;
+  padding:14px 16px;font-family:var(--mono);font-size:clamp(14px,3.5vw,17px);
+  color:#fff;outline:none;min-width:0;
+  transition:border-color .2s,background .2s;
+  -webkit-appearance:none;
+}
+#scan-input::placeholder{color:rgba(255,255,255,.45);font-family:var(--sans);font-size:13px}
+#scan-input:focus{border-color:rgba(255,255,255,.9);background:rgba(255,255,255,.2)}
+body.state-validated #scan-input{color:#0a1628;border-color:rgba(0,0,0,.3);background:rgba(0,0,0,.08)}
+body.state-validated #scan-input:focus{border-color:rgba(0,0,0,.5)}
+body.state-validated #scan-input::placeholder{color:rgba(0,0,0,.35)}
+.cam-btn{
+  background:rgba(255,255,255,.15);border:2px solid rgba(255,255,255,.4);
+  border-radius:10px;padding:0 14px;cursor:pointer;font-size:22px;
+  transition:all .2s;flex-shrink:0;display:flex;align-items:center;
+}
+.cam-btn:hover,.cam-btn:active{background:rgba(255,255,255,.3)}
+.confirm-btn{
+  width:100%;margin-top:10px;padding:16px;
+  background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.5);
+  border-radius:10px;font-family:var(--sans);font-weight:700;
+  font-size:clamp(14px,3.5vw,17px);color:#fff;cursor:pointer;letter-spacing:.5px;
+  transition:all .2s;-webkit-appearance:none;
+}
+.confirm-btn:hover,.confirm-btn:active{background:rgba(255,255,255,.35)}
+body.state-validated .confirm-btn{color:#0a1628;border-color:rgba(0,0,0,.3);background:rgba(0,0,0,.08)}
+
+/* ── WRONG GATE BANNER ──────────────────────────────────────────────────── */
+#wrong-gate{
+  display:none;width:100%;max-width:420px;
+  background:var(--red);border-radius:12px;padding:14px 16px;
+  font-family:var(--sans);font-size:13px;font-weight:600;
+  text-align:center;line-height:1.5;
+}
+
+/* ── STEP DOTS ──────────────────────────────────────────────────────────── */
+#step-dots{display:flex;gap:8px;align-items:center}
+.dot{
+  width:10px;height:10px;border-radius:50%;
+  background:rgba(255,255,255,.3);transition:all .3s;
+}
+.dot.done{background:rgba(255,255,255,.9);transform:scale(1.15)}
+.dot.active{background:#fff;transform:scale(1.3);box-shadow:0 0 8px rgba(255,255,255,.5)}
+
+/* ── CAMERA MODAL ───────────────────────────────────────────────────────── */
+#cam-modal{
+  display:none;position:fixed;inset:0;z-index:999;
+  background:#000;flex-direction:column;
+}
+#cam-modal.open{display:flex}
+#cam-video{width:100%;flex:1;object-fit:cover}
+#cam-overlay{
+  position:absolute;inset:0;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;
+}
+.scan-frame{
+  width:65vw;height:65vw;max-width:280px;max-height:280px;
+  border:3px solid rgba(255,255,255,.8);border-radius:16px;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.55);
+}
+#cam-close{
+  position:absolute;top:20px;right:20px;
+  background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.5);
+  border-radius:10px;padding:10px 18px;color:#fff;font-family:var(--sans);
+  font-size:14px;font-weight:600;cursor:pointer;z-index:2;
+}
+#cam-status{
+  position:absolute;bottom:30px;left:0;right:0;
+  text-align:center;font-family:var(--sans);font-size:13px;
+  color:rgba(255,255,255,.8);
+}
+
+/* ── RESPONSIVE ─────────────────────────────────────────────────────────── */
+/* Phone portrait ≤ 420px — stack tighter */
+@media(max-height:600px){
+  .state-icon{font-size:36px}
+  .state-lbl{font-size:20px}
+  .prog-nums{font-size:32px}
+  #main{gap:10px;padding:10px}
+  #scan-area{padding:12px}
+}
+/* PDA landscape */
+@media(min-width:600px) and (orientation:landscape){
+  #main{flex-direction:row;flex-wrap:wrap;justify-content:center;gap:20px}
+  #progress-wrap{max-width:200px}
+  #scan-area{max-width:340px}
+}
+/* Tablet ≥ 768px */
+@media(min-width:768px){
+  .state-lbl{font-size:clamp(28px,4vw,52px)}
+  .prog-nums{font-size:clamp(48px,8vw,80px)}
+  #scan-area{padding:20px}
+  #scan-input{font-size:18px;padding:16px 18px}
+}
+</style>
+</head>
+<body class="state-idle" id="body">
+<div id="cam-modal">
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div id="cam-overlay"><div class="scan-frame"></div></div>
+  <button id="cam-close" onclick="stopCamera()">✕ Cancel</button>
+  <div id="cam-status" id="cam-status-lbl">Point camera at barcode</div>
+</div>
+
+<!-- HEADER -->
+<div id="hdr">
+  <div class="hdr-gate" id="hdr-gate">Gate {{ gate_id }}</div>
+  <div class="hdr-right">
+    <div id="step-dots">
+      <div class="dot active" id="dot-0"></div>
+      <div class="dot" id="dot-1"></div>
+      <div class="dot" id="dot-2"></div>
+    </div>
+    <button class="lang-btn active" onclick="setLang('en')" id="ln-en">EN</button>
+    <button class="lang-btn" onclick="setLang('fr')" id="ln-fr">FR</button>
+    <button class="lang-btn" onclick="setLang('de')" id="ln-de">DE</button>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <div class="state-icon" id="state-icon">🔵</div>
+  <div class="state-lbl" id="state-lbl">—</div>
+
+  <div id="progress-wrap" style="display:none">
+    <div class="prog-nums" id="prog-nums">0/0</div>
+    <div class="prog-lbl" id="prog-lbl-pallets">PALLETS LOADED</div>
+    <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div id="wrong-gate" id="wrong-gate-banner"></div>
+
+  <div id="scan-area">
+    <div class="scan-step-lbl" id="scan-step-lbl">STEP 1 OF 3</div>
+    <div class="scan-input-row">
+      <input type="text" id="scan-input" autocomplete="off" autocorrect="off"
+             autocapitalize="off" spellcheck="false"
+             inputmode="text" enterkeyhint="go"
+             onkeydown="onKey(event)"/>
+      <button class="cam-btn" onclick="startCamera()" title="Scan with camera">📷</button>
+    </div>
+    <button class="confirm-btn" id="confirm-btn" onclick="confirmStep()">—</button>
+  </div>
+</div>
+
+<script>
+const GATE_ID   = {{ gate_id }};
+const VM_URL    = window.location.origin;
+
+// ── Direct ZED Box connection (DL-028) ─────────────────────────────────────
+// SSE primary, polling fallback — VM not in the loop
+let _sse         = null;
+let _pollTimer   = null;
+let _sseOk       = false;
+
+function connectZedBox() {
+  if (!ZED_URL) { startPolling(); return; }
+
+  try {
+    _sse = new EventSource(`${ZED_URL}/driver/stream`);
+    _sse.onmessage = e => {
+      _sseOk = true;
+      stopPolling();
+      const d = JSON.parse(e.data);
+      applyZedState(d);
+    };
+    _sse.onerror = () => {
+      _sseOk = false;
+      startPolling();   // fallback to polling if SSE drops
+    };
+  } catch(e) {
+    startPolling();
+  }
+}
+
+function startPolling() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch(`${ZED_URL}/driver/status`);
+      const d = await r.json();
+      applyZedState(d);
+    } catch(_) {}
+  }, 1000);
+}
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function applyZedState(d) {
+  if (step < 2) return;
+  appMode = d.mode  || 'IDLE';
+  loaded  = d.loaded || loaded;
+  total   = d.total  || total;
+  renderLiveState();
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let step        = 0;   // 0=forklift, 1=mission, 2=loading
+let forkliftId  = '';
+let missionRef  = '';
+let lang        = localStorage.getItem('dl_lang') || 'en';
+let loaded      = 0;
+let total       = 0;
+let appMode     = 'IDLE';
+let cameraStream= null;
+let barcodeReader = null;
+
+// ── Translations ────────────────────────────────────────────────────────────
+const T = {
+  en: {
+    step0_lbl:  'STEP 1 OF 3 — FORKLIFT ID',
+    step0_ph:   'Scan or type your forklift ID',
+    step0_btn:  'Confirm Forklift',
+    step0_icon: '🚜',
+    step0_state:'Scan your forklift ID',
+
+    step1_lbl:  'STEP 2 OF 3 — ORDER NUMBER',
+    step1_ph:   'Scan or type WMS order number',
+    step1_btn:  'Start Mission',
+    step1_icon: '📋',
+    step1_state:'Scan the WMS order number',
+
+    step2_lbl:  'SCAN PALLET BARCODE',
+    loaded_lbl: 'PALLETS LOADED',
+
+    standby:    'Scan pallet barcode',
+    armed:      'Drive through the gate',
+    validated:  'Pallet confirmed ✓',
+    err_sscc:   'Wrong barcode — try again',
+    err_fork:   'Wrong gate — check your gate number',
+    done:       'Mission complete ✓',
+    wrong_gate: '⚠ Wrong gate — your mission is at Gate ',
+    offline:    'Gate offline',
+    idle:       'Waiting for mission...',
+  },
+  fr: {
+    step0_lbl:  'ÉTAPE 1/3 — IDENTIFIANT CHARIOT',
+    step0_ph:   'Scanner ou saisir l\'ID du chariot',
+    step0_btn:  'Confirmer le chariot',
+    step0_icon: '🚜',
+    step0_state:'Scannez votre identifiant chariot',
+
+    step1_lbl:  'ÉTAPE 2/3 — NUMÉRO DE COMMANDE',
+    step1_ph:   'Scanner ou saisir le numéro WMS',
+    step1_btn:  'Démarrer la mission',
+    step1_icon: '📋',
+    step1_state:'Scannez le numéro de commande WMS',
+
+    step2_lbl:  'SCANNEZ LE CODE SSCC',
+    loaded_lbl: 'PALETTES CHARGÉES',
+
+    standby:    'Scannez le code de la palette',
+    armed:      'Passez le portique',
+    validated:  'Palette confirmée ✓',
+    err_sscc:   'Mauvais code — réessayez',
+    err_fork:   'Mauvais portique — vérifiez votre numéro',
+    done:       'Mission terminée ✓',
+    wrong_gate: '⚠ Mauvais portique — votre mission est au Portique ',
+    offline:    'Portique hors ligne',
+    idle:       'En attente de mission...',
+  },
+  de: {
+    step0_lbl:  'SCHRITT 1/3 — STAPLER-ID',
+    step0_ph:   'Stapler-ID scannen oder eingeben',
+    step0_btn:  'Stapler bestätigen',
+    step0_icon: '🚜',
+    step0_state:'Scannen Sie Ihre Stapler-ID',
+
+    step1_lbl:  'SCHRITT 2/3 — AUFTRAGSNUMMER',
+    step1_ph:   'WMS-Auftragsnummer scannen oder eingeben',
+    step1_btn:  'Auftrag starten',
+    step1_icon: '📋',
+    step1_state:'Scannen Sie die WMS-Auftragsnummer',
+
+    step2_lbl:  'SSCC-CODE SCANNEN',
+    loaded_lbl: 'GELADENE PALETTEN',
+
+    standby:    'Paletten-Barcode scannen',
+    armed:      'Durch das Tor fahren',
+    validated:  'Palette bestätigt ✓',
+    err_sscc:   'Falscher Code — erneut versuchen',
+    err_fork:   'Falsches Tor — Tornummer prüfen',
+    done:       'Auftrag abgeschlossen ✓',
+    wrong_gate: '⚠ Falsches Tor — Ihr Auftrag ist an Tor ',
+    offline:    'Tor offline',
+    idle:       'Warte auf Auftrag...',
+  }
+};
+
+function t(key) { return (T[lang] || T.en)[key] || key; }
+
+// ── Language ────────────────────────────────────────────────────────────────
+function setLang(l) {
+  lang = l;
+  localStorage.setItem('dl_lang', l);
+  ['en','fr','de'].forEach(x => {
+    document.getElementById(`ln-${x}`).classList.toggle('active', x === l);
+  });
+  render();
+}
+
+// ── Step machine ────────────────────────────────────────────────────────────
+function render() {
+  const inp = document.getElementById('scan-input');
+  const btn = document.getElementById('confirm-btn');
+  const lbl = document.getElementById('scan-step-lbl');
+  const icon= document.getElementById('state-icon');
+  const slbl= document.getElementById('state-lbl');
+  const pw  = document.getElementById('progress-wrap');
+  const sa  = document.getElementById('scan-area');
+
+  // Dots
+  [0,1,2].forEach(i => {
+    const d = document.getElementById(`dot-${i}`);
+    d.className = 'dot' + (i < step ? ' done' : i === step ? ' active' : '');
+  });
+
+  if (step === 0) {
+    sa.style.display     = '';
+    pw.style.display     = 'none';
+    icon.textContent     = t('step0_icon');
+    slbl.textContent     = t('step0_state');
+    lbl.textContent      = t('step0_lbl');
+    inp.placeholder      = t('step0_ph');
+    btn.textContent      = t('step0_btn');
+    inp.value            = '';
+    setBodyState('idle');
+    icon.className       = 'state-icon';
+    setTimeout(() => inp.focus(), 100);
+
+  } else if (step === 1) {
+    sa.style.display     = '';
+    pw.style.display     = 'none';
+    icon.textContent     = t('step1_icon');
+    slbl.textContent     = t('step1_state');
+    lbl.textContent      = t('step1_lbl');
+    inp.placeholder      = t('step1_ph');
+    btn.textContent      = t('step1_btn');
+    inp.value            = '';
+    setBodyState('idle');
+    icon.className       = 'state-icon';
+    setTimeout(() => inp.focus(), 100);
+
+  } else if (step === 2) {
+    sa.style.display     = 'none';
+    pw.style.display     = '';
+    renderLiveState();
+  }
+}
+
+function renderLiveState() {
+  const icon = document.getElementById('state-icon');
+  const slbl = document.getElementById('state-lbl');
+
+  // Progress
+  document.getElementById('prog-nums').textContent = `${loaded}/${total}`;
+  document.getElementById('prog-fill').style.width = total > 0 ? `${Math.round(loaded/total*100)}%` : '0%';
+  document.getElementById('prog-lbl-pallets').textContent = t('loaded_lbl');
+
+  if (loaded >= total && total > 0) {
+    setBodyState('done');
+    icon.textContent = '✅'; icon.className = 'state-icon';
+    slbl.textContent = t('done');
+    playSound('success'); return;
+  }
+
+  switch(appMode) {
+    case 'STANDBY':
+      setBodyState('standby');
+      icon.textContent = '📦'; icon.className = 'state-icon pulse';
+      slbl.textContent = t('standby'); break;
+    case 'ARMED':
+      setBodyState('armed');
+      icon.textContent = '🚜'; icon.className = 'state-icon pulse';
+      slbl.textContent = t('armed'); break;
+    case 'VALIDATED':
+      setBodyState('validated');
+      icon.textContent = '✅'; icon.className = 'state-icon';
+      slbl.textContent = t('validated');
+      playSound('ok'); break;
+    case 'ERROR_SSCC':
+      setBodyState('error');
+      icon.textContent = '❌'; icon.className = 'state-icon shake';
+      slbl.textContent = t('err_sscc');
+      playSound('error'); break;
+    case 'ERROR_FORKLIFT':
+      setBodyState('error');
+      icon.textContent = '🚫'; icon.className = 'state-icon shake';
+      slbl.textContent = t('err_fork');
+      playSound('error'); break;
+    default:
+      setBodyState('idle');
+      icon.textContent = '⏳'; icon.className = 'state-icon';
+      slbl.textContent = t('idle');
+  }
+}
+
+function setBodyState(s) {
+  const b = document.getElementById('body');
+  b.className = `state-${s}`;
+}
+
+// ── Confirm steps ───────────────────────────────────────────────────────────
+async function confirmStep() {
+  const val = document.getElementById('scan-input').value.trim();
+  if (!val) return;
+
+  if (step === 0) {
+    forkliftId = val;
+    step = 1;
+    render();
+
+  } else if (step === 1) {
+    missionRef = val;
+    const ok = await activateMission();
+    if (ok) { step = 2; render(); }
+  }
+}
+
+function onKey(e) {
+  if (e.key === 'Enter') confirmStep();
+}
+
+async function activateMission() {
+  try {
+    const r = await fetch(`/gate/${GATE_ID}/driver/activate`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        forklift_id:  forkliftId,
+        mission_ref:  missionRef,
+      })
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      showError(d.error || 'Activation failed');
+      return false;
+    }
+    total   = d.total_pallets || 0;
+    loaded  = d.loaded        || 0;
+    appMode = 'STANDBY';
+    return true;
+  } catch(e) {
+    showError('Connection error');
+    return false;
+  }
+}
+
+function showError(msg) {
+  const slbl = document.getElementById('state-lbl');
+  slbl.textContent = msg;
+  playSound('error');
+}
+
+// ── Wrong gate detection ────────────────────────────────────────────────────
+function checkWrongGate(data) {
+  const wg = document.getElementById('wrong-gate');
+  if (data.correct_gate && data.correct_gate !== GATE_ID) {
+    wg.style.display = '';
+    wg.textContent   = t('wrong_gate') + data.correct_gate;
+  } else {
+    wg.style.display = 'none';
+  }
+}
+
+// ── SocketIO live updates (supervisor dashboard only — not used here) ───────
+// Driver tablet connects directly to ZED Box via SSE (DL-028)
+
+// ── Camera scanner ──────────────────────────────────────────────────────────
+async function startCamera() {
+  const modal = document.getElementById('cam-modal');
+  const video = document.getElementById('cam-video');
+  modal.classList.add('open');
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: {ideal:1280} }
+    });
+    video.srcObject = cameraStream;
+    startBarcodeDetection(video);
+  } catch(e) {
+    document.getElementById('cam-status').textContent =
+      'Camera not available — type manually';
+  }
+}
+
+function startBarcodeDetection(video) {
+  // Use BarcodeDetector API if available (Chrome/Android)
+  if ('BarcodeDetector' in window) {
+    barcodeReader = new BarcodeDetector({formats: ['code_128','qr_code','code_39','ean_13','ean_8']});
+    const detect = async () => {
+      if (!cameraStream) return;
+      try {
+        const codes = await barcodeReader.detect(video);
+        if (codes.length > 0) {
+          const val = codes[0].rawValue;
+          document.getElementById('scan-input').value = val;
+          stopCamera();
+          confirmStep();
+          return;
+        }
+      } catch(_) {}
+      requestAnimationFrame(detect);
+    };
+    requestAnimationFrame(detect);
+  } else {
+    // Fallback — show manual entry hint
+    document.getElementById('cam-status').textContent =
+      'Camera scanning not supported — type the code manually';
+  }
+}
+
+function stopCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  document.getElementById('cam-modal').classList.remove('open');
+  setTimeout(() => document.getElementById('scan-input').focus(), 100);
+}
+
+// ── Web Audio sound cues ────────────────────────────────────────────────────
+const _ac = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSound(type) {
+  const ctx = _ac;
+  const osc = ctx.createOscillator();
+  const gain= ctx.createGain();
+  osc.connect(gain); gain.connect(ctx.destination);
+
+  if (type === 'ok') {
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    osc.start(); osc.stop(ctx.currentTime + 0.25);
+  } else if (type === 'error') {
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, ctx.currentTime);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.start(); osc.stop(ctx.currentTime + 0.4);
+  } else if (type === 'success') {
+    osc.frequency.setValueAtTime(660, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.1);
+    osc.frequency.setValueAtTime(1320, ctx.currentTime + 0.2);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    osc.start(); osc.stop(ctx.currentTime + 0.5);
+  }
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+setLang(lang);
+render();
+connectZedBox();
+</script>
+</body>
+</html>
