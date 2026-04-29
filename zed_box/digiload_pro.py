@@ -33,6 +33,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
+from plugin_loader import PluginLoader
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -586,6 +587,8 @@ class AppState:
         self.feature_led_control  = True
         self.feature_disk_manager = True
         self.feature_hud          = True
+        # Plugin system
+        self.plugins: PluginLoader | None = None
         self.ui_mode="MAIN"
         self.app_mode="IDLE"; self.active_tour_id=None
         self.current_sscc=None; self.last_action_time=0.0
@@ -734,17 +737,42 @@ def _sf(v,d=0.0):
 # LED
 # ─────────────────────────────────────────────────────────────────────────────
 def _led_cb(ok):
-    st.net_status="OK" if ok else "ERR"
-    if not ok: log.warning("[led] Send failed")
+    # Legacy callback — LED status now comes from led_control plugin
+    st.net_status = "OK" if ok else "ERR"
 
 def send_preset(name):
+    # Delegated to led_control plugin via on_state_change
+    # Kept as direct call for backward compatibility during transition
     if not st.feature_led_control:
-        return   # LED control disabled for this installation
-    p=st.led_presets.get(name,st.led_presets.get("off",{}))
-    if not p: return
-    payload=build_led_payload(p.get("r",0),p.get("g",0),p.get("b",0),
-        p.get("effect","static"),p.get("brightness",200),p.get("speed",128),on=(name!="off"))
-    send_led(st.led_ip,payload,_led_cb)
+        return
+    if st.plugins:
+        # Find led_control plugin and call directly if needed outside transition
+        import importlib
+        for p in st.plugins._plugins:
+            if hasattr(p, '_send_preset'):
+                p._send_preset(name)
+                return
+    # Fallback: direct send (used before plugins are loaded)
+    _send_led_direct(name)
+
+def _send_led_direct(name):
+    """Fallback direct LED send — used only before plugin system is ready."""
+    p = st.led_presets.get(name, st.led_presets.get("off", {}))
+    if not p or not st.led_ip: return
+    import requests, numpy as np
+    WLED_EFFECTS = {"static":0,"blink":1,"breath":2,"strobe":51}
+    payload = {
+        "on": (name != "off"),
+        "bri": int(np.clip(p.get("brightness",200),0,255)),
+        "seg": [{"col":[[p.get("r",0),p.get("g",0),p.get("b",0)]],
+                 "fx": WLED_EFFECTS.get(p.get("effect","static"),0),
+                 "sx": int(np.clip(p.get("speed",128),0,255))}]
+    }
+    def _do():
+        try: requests.post(f"http://{st.led_ip}/json/state",json=payload,timeout=1.5)
+        except: pass
+    import threading
+    threading.Thread(target=_do,daemon=True).start()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WMS STUB (Phase 0 — queues events, Phase 1 wms_connector.py processes)
@@ -780,6 +808,18 @@ def transition(mode, sscc=None, tour_id=None):
         sscc_snap      = st.current_sscc
 
     # ── Side effects outside the lock (avoid deadlocks from nested calls) ──
+    # Build context dict for plugins
+    ctx = {
+        "gate_id":    st.gate_id,
+        "gate_name":  st.gate_name,
+        "sscc":       sscc_snap,
+        "tour_id":    tour_snap,
+        "forklift_id":st.target_id,
+    }
+    # Fire plugin on_state_change
+    if st.plugins:
+        st.plugins.on_state_change(mode, ctx)
+
     if do_validated:
         loaded,total=db_get_progress(tour_snap)
         trigger_validated_anim(sscc_snap,loaded,total)
@@ -790,6 +830,11 @@ def transition(mode, sscc=None, tour_id=None):
             "sscc":sscc_snap,"forklift_id":st.target_id,
             "loaded_at":datetime.now().isoformat(),"tour_id":tour_snap,
         })
+        if st.plugins:
+            st.plugins.on_validated(sscc_snap, {
+                **ctx, "loaded": loaded, "total": total
+            })
+
     if do_err_fork:
         if st.module_video_tracking and st.recorder and st.pri_buffer:
             st.recorder.trigger(st.pri_buffer,st.sec_buffer,sscc_snap,tour_snap,"ERROR_FORKLIFT")
@@ -797,6 +842,8 @@ def transition(mode, sscc=None, tour_id=None):
             "gate_id":st.gate_id,"gate_name":st.gate_name,"error_type":"WRONG_FORKLIFT",
             "sscc":sscc_snap,"timestamp":datetime.now().isoformat(),
         })
+        if st.plugins:
+            st.plugins.on_error("WRONG_FORKLIFT", ctx)
 
 def poll_db_activation():
     while True:
@@ -817,6 +864,10 @@ def handle_sscc_scan(sscc):
     else:
         db_flag_sscc(sscc,st.active_tour_id); transition("ERROR_SSCC")
         st.last_scan_display=f"INVALID: {sscc}"; log.warning(f"[scan] Invalid: {sscc}")
+        if st.plugins:
+            st.plugins.on_error("WRONG_SSCC", {
+                "gate_id": st.gate_id, "sscc": sscc, "tour_id": st.active_tour_id
+            })
 
 def handle_aruco_detected(ids_array):
     flat=ids_array.flatten().tolist()
@@ -1143,6 +1194,14 @@ def run():
     _reinit_recording()
     if st.module_video_tracking: log.info(f"[modules] VideoTracking ACTIVE pre={st.rec_pre}s post={st.rec_post}s")
     if st.module_multi_angle:    log.info(f"[modules] MultiAngle ACTIVE")
+
+    # ── Load plugins ──────────────────────────────────────────────────────────
+    plugins_dir = os.path.join(os.path.dirname(_CONFIG_FILE or CONFIG_LOCAL), "plugins") \
+                  if os.path.exists(os.path.dirname(CONFIG_FILE)) \
+                  else "plugins"
+    st.plugins = PluginLoader(plugins_dir, st.raw_config)
+    st.plugins.on_start(st.raw_config)
+    log.info(f"[plugins] Active: {st.plugins.loaded_names()}")
     threading.Thread(target=poll_db_activation,daemon=True).start()
     if st.module_video_tracking:
         if st.feature_disk_manager:
@@ -1188,7 +1247,9 @@ def run():
             key=cv2.waitKey(1)&0xFF
             if key==255: break
             if not handle_key(key,cam):
-                log.info("[app] Shutdown"); cam.close(); cv2.destroyAllWindows(); return
+                log.info("[app] Shutdown")
+                if st.plugins: st.plugins.on_stop()
+                cam.close(); cv2.destroyAllWindows(); return
 
 if __name__=="__main__":
     run()
