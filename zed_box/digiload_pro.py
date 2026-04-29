@@ -1367,6 +1367,7 @@ def check_wrong_gate(detected_id: int) -> bool:
     return True
 
 
+def run():
     log.info("="*60)
     log.info("Digiload Pro v2.0 — Starting")
     log.info("="*60)

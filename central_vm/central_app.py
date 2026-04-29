@@ -165,6 +165,7 @@ def init_db():
         sscc        TEXT NOT NULL,
         sku         TEXT,
         weight_kg   NUMERIC,
+        extra_fields JSONB DEFAULT '{}',
         status      TEXT DEFAULT 'WAITING'
             CHECK (status IN ('WAITING','LOADED','FLAGGED')),
         scan_time   TIMESTAMPTZ,
@@ -172,6 +173,20 @@ def init_db():
         forklift_id INTEGER,
         UNIQUE(mission_id, sscc)
     );
+
+    -- Configurable CSV column mapping per gate/installation (DL-022)
+    CREATE TABLE IF NOT EXISTS csv_mappings (
+        id          SERIAL PRIMARY KEY,
+        gate_id     INTEGER REFERENCES gates(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL DEFAULT 'Default',
+        mapping     JSONB NOT NULL DEFAULT '{}',
+        is_default  BOOLEAN DEFAULT true,
+        created_at  TIMESTAMPTZ DEFAULT now(),
+        updated_at  TIMESTAMPTZ DEFAULT now()
+    );
+
+    -- Add extra_fields to pallets if upgrading from older schema
+    ALTER TABLE pallets ADD COLUMN IF NOT EXISTS extra_fields JSONB DEFAULT '{}';
 
     CREATE TABLE IF NOT EXISTS clips (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -390,6 +405,227 @@ def _get_from_agent(gate_id: int, endpoint: str,
 # ─────────────────────────────────────────────────────────────────────────────
 # BACKGROUND: broadcast gate states via SocketIO every 2s
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# ── CSV MAPPING ENGINE (DL-022) ───────────────────────────────────────────────
+# Maps customer column names → Digiload standard fields
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Standard Digiload field names
+_STANDARD_FIELDS = {
+    "sscc", "sku", "weight_kg", "mission_name", "truck_id", "gate_id",
+    "carrier", "customer_order", "delivery_note", "destination",
+    "temp_requirement", "dangerous_goods", "priority",
+    "custom_1", "custom_2", "custom_3", "custom_4", "custom_5",
+}
+
+# Auto-detection fallbacks when no mapping configured
+_AUTO_DETECT = {
+    "sscc":       ["sscc","barcode","code","sscc_code","nr_sscc","code_barre"],
+    "sku":        ["sku","article","product","ref","reference","item"],
+    "weight_kg":  ["weight_kg","weight","poids","poids_brut","kg","masse"],
+    "truck_id":   ["truck_id","truck","camion","vehicle","vehicule"],
+    "carrier":    ["carrier","transporteur","spediteur","transport"],
+    "customer_order": ["customer_order","order","commande","n_commande","auftrag"],
+    "delivery_note":  ["delivery_note","bl","bon_livraison","n_bl","lieferschein"],
+    "destination":    ["destination","dest","zielort"],
+    "gate_id":        ["gate_id","gate","quai","dock","tor"],
+}
+
+def get_csv_mapping(gate_id: int) -> dict:
+    """Load CSV mapping for a gate. Returns empty dict if none configured."""
+    row = _q(
+        "SELECT mapping FROM csv_mappings WHERE gate_id=%s AND is_default=true LIMIT 1",
+        (gate_id,), fetchone=True
+    )
+    return row["mapping"] if row else {}
+
+def apply_csv_mapping(row: dict, mapping: dict) -> dict:
+    """
+    Map a CSV row to Digiload standard fields using configured mapping.
+    Falls back to auto-detection for unmapped fields.
+    Extra columns not in standard fields → extra_fields JSONB.
+
+    Returns:
+        {
+            "sscc": "...", "sku": "...", "weight_kg": ...,
+            "extra_fields": {"carrier": "DHL", "customer_order": "..."}
+        }
+    """
+    result      = {}
+    extra_fields = {}
+
+    # Build reverse mapping: csv_col → standard_field
+    reverse = {v: k for k, v in mapping.items()}  # csv_col → digiload_field
+
+    for csv_col, value in row.items():
+        value = str(value).strip() if value else ""
+        if not value:
+            continue
+        col_lower = csv_col.lower().strip()
+
+        # Check configured mapping first
+        if col_lower in reverse:
+            field = reverse[col_lower]
+            if field in _STANDARD_FIELDS:
+                result[field] = value
+            continue
+
+        # Auto-detect standard fields
+        matched = False
+        for field, aliases in _AUTO_DETECT.items():
+            if col_lower in aliases or col_lower == field:
+                result[field] = value
+                matched = True
+                break
+
+        # Everything else → extra_fields
+        if not matched and csv_col not in ("", " "):
+            extra_fields[csv_col] = value
+
+    result["extra_fields"] = extra_fields
+    return result
+
+def parse_csv_with_mapping(content: str, gate_id: int) -> list:
+    """
+    Parse a CSV file using the configured column mapping for this gate.
+    Auto-detects delimiter (comma or semicolon) and encoding.
+    Returns list of normalised pallet dicts.
+    """
+    # Detect delimiter
+    sample = content[:2000]
+    delimiter = ";" if sample.count(";") > sample.count(",") else ","
+
+    mapping = get_csv_mapping(gate_id)
+    reader  = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+    pallets = []
+
+    for row in reader:
+        mapped = apply_csv_mapping(row, mapping)
+        sscc   = mapped.get("sscc", "").strip()
+        if not sscc:
+            continue
+        pallets.append({
+            "sscc":        sscc,
+            "sku":         mapped.get("sku") or None,
+            "weight_kg":   _safe_float(mapped.get("weight_kg")),
+            "extra_fields": mapped.get("extra_fields", {}),
+            "gate_id_csv": mapped.get("gate_id") or None,
+        })
+
+    return pallets
+
+def _safe_float(v):
+    try:    return float(str(v).replace(",",".")) if v else None
+    except: return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── SFTP WATCHER (DL-022) ────────────────────────────────────────────────────
+# Watches /sftp/incoming/ for new CSV files, auto-imports them
+# ─────────────────────────────────────────────────────────────────────────────
+import hashlib as _hashlib
+
+SFTP_INCOMING = os.environ.get("SFTP_INCOMING_DIR", "/sftp/incoming")
+SFTP_ARCHIVE  = os.environ.get("SFTP_ARCHIVE_DIR",  "/sftp/archive")
+SFTP_FAILED   = os.environ.get("SFTP_FAILED_DIR",   "/sftp/failed")
+SFTP_POLL_S   = 60
+
+def _sftp_md5(path: str) -> str:
+    h = _hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _sftp_already_imported(md5: str) -> bool:
+    row = _q(
+        "SELECT id FROM audit_log WHERE action='mission.sftp_imported' "
+        "AND details->>'md5'=%s LIMIT 1",
+        (md5,), fetchone=True
+    )
+    return row is not None
+
+def _sftp_import_file(filepath: str):
+    """Process a single CSV file from SFTP incoming folder."""
+    filename = os.path.basename(filepath)
+    md5      = _sftp_md5(filepath)
+
+    if _sftp_already_imported(md5):
+        log.info(f"[sftp] Skipping duplicate: {filename}")
+        os.makedirs(SFTP_ARCHIVE, exist_ok=True)
+        os.rename(filepath, os.path.join(SFTP_ARCHIVE, filename))
+        return
+
+    try:
+        with open(filepath, "r", encoding="utf-8-sig", errors="replace") as f:
+            content = f.read()
+
+        # Try to infer gate_id from filename: gate3_missions.csv → 3
+        gate_id = None
+        import re as _re
+        m = _re.search(r"gate[_\-]?(\d+)", filename.lower())
+        if m:
+            gate_id = int(m.group(1))
+
+        pallets = parse_csv_with_mapping(content, gate_id or 0)
+        if not pallets:
+            raise ValueError("No pallets found in file")
+
+        # Use gate_id from CSV rows if not in filename
+        if not gate_id and pallets[0].get("gate_id_csv"):
+            gate_id = int(pallets[0]["gate_id_csv"])
+        if not gate_id:
+            raise ValueError("Cannot determine gate_id from filename or CSV content")
+
+        # Create mission
+        mission_name = os.path.splitext(filename)[0]
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO missions (gate_id, name, total_pallets, source)
+                               VALUES (%s,%s,%s,'sftp') RETURNING id""",
+                            (gate_id, mission_name, len(pallets)))
+                mission_id = cur.fetchone()["id"]
+                for p in pallets:
+                    import json as _json
+                    cur.execute("""INSERT INTO pallets
+                                   (mission_id, gate_id, sscc, sku, weight_kg, extra_fields)
+                                   VALUES (%s,%s,%s,%s,%s,%s)
+                                   ON CONFLICT (mission_id, sscc) DO NOTHING""",
+                                (mission_id, gate_id, p["sscc"],
+                                 p["sku"], p["weight_kg"],
+                                 _json.dumps(p["extra_fields"])))
+            conn.commit()
+
+        _audit("mission.sftp_imported",
+               details={"filename": filename, "gate_id": gate_id,
+                        "pallets": len(pallets), "md5": md5})
+        log.info(f"[sftp] Imported {filename} → gate {gate_id}, {len(pallets)} pallets")
+
+        # Archive
+        os.makedirs(SFTP_ARCHIVE, exist_ok=True)
+        os.rename(filepath, os.path.join(SFTP_ARCHIVE, filename))
+
+    except Exception as e:
+        log.error(f"[sftp] Failed {filename}: {e}")
+        os.makedirs(SFTP_FAILED, exist_ok=True)
+        try: os.rename(filepath, os.path.join(SFTP_FAILED, filename))
+        except Exception: pass
+
+def _sftp_watcher_loop():
+    """Background thread — polls SFTP incoming folder every 60s."""
+    log.info(f"[sftp] Watcher started — watching {SFTP_INCOMING} every {SFTP_POLL_S}s")
+    while True:
+        try:
+            if os.path.isdir(SFTP_INCOMING):
+                for fname in sorted(os.listdir(SFTP_INCOMING)):
+                    if fname.lower().endswith(".csv") and not fname.startswith("."):
+                        fpath = os.path.join(SFTP_INCOMING, fname)
+                        _sftp_import_file(fpath)
+        except Exception as e:
+            log.error(f"[sftp] Watcher error: {e}")
+        time.sleep(SFTP_POLL_S)
+
+
 def _broadcast_loop():
     while True:
         time.sleep(2)
@@ -586,28 +822,10 @@ def import_mission():
     if not _can_access_gate(request.user, gate_id):
         return jsonify({"ok": False, "error": "No access to this gate"}), 403
 
-    # Parse CSV
+    # Parse CSV using configurable column mapping (DL-022)
     try:
-        content   = csv_file.read().decode("utf-8-sig")
-        reader    = csv.DictReader(io.StringIO(content))
-        sscc_col  = None
-        pallets   = []
-        for row in reader:
-            # Auto-detect SSCC column
-            if sscc_col is None:
-                for col in row.keys():
-                    if "sscc" in col.lower() or "barcode" in col.lower() or "code" in col.lower():
-                        sscc_col = col
-                        break
-                if sscc_col is None:
-                    sscc_col = list(row.keys())[0]
-            sscc = str(row.get(sscc_col, "")).strip()
-            if sscc:
-                pallets.append({
-                    "sscc":      sscc,
-                    "sku":       row.get("sku", row.get("SKU","")),
-                    "weight_kg": row.get("weight", row.get("weight_kg","")) or None,
-                })
+        content = csv_file.read().decode("utf-8-sig", errors="replace")
+        pallets = parse_csv_with_mapping(content, gate_id)
     except Exception as e:
         return jsonify({"ok": False, "error": f"CSV parse error: {e}"}), 400
 
@@ -615,6 +833,7 @@ def import_mission():
         return jsonify({"ok": False, "error": "No pallets found in CSV"}), 400
 
     # Insert mission + pallets
+    import json as _json
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""INSERT INTO missions (gate_id, name, total_pallets, source)
@@ -622,12 +841,14 @@ def import_mission():
                         (gate_id, name, len(pallets)))
             mission_id = cur.fetchone()["id"]
             for p in pallets:
-                cur.execute("""INSERT INTO pallets (mission_id, gate_id, sscc, sku, weight_kg)
-                               VALUES (%s,%s,%s,%s,%s)
+                cur.execute("""INSERT INTO pallets
+                               (mission_id, gate_id, sscc, sku, weight_kg, extra_fields)
+                               VALUES (%s,%s,%s,%s,%s,%s)
                                ON CONFLICT (mission_id, sscc) DO NOTHING""",
                             (mission_id, gate_id, p["sscc"],
-                             p["sku"] or None,
-                             float(p["weight_kg"]) if p["weight_kg"] else None))
+                             p["sku"],
+                             p["weight_kg"],
+                             _json.dumps(p["extra_fields"])))
         conn.commit()
 
     _audit("mission.imported", user_id=request.user.get("sub"),
@@ -1078,6 +1299,84 @@ def deactivate_user(user_id):
            user_email=request.user.get("email"),
            target_type="user", target_id=user_id)
     return jsonify({"ok": True})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── CSV MAPPING API (DL-022) ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/api/csv-mapping/<int:gate_id>", methods=["GET"])
+@login_required
+def get_mapping(gate_id):
+    """Get current CSV column mapping for a gate."""
+    row = _q("SELECT * FROM csv_mappings WHERE gate_id=%s AND is_default=true",
+             (gate_id,), fetchone=True)
+    if not row:
+        return jsonify({"ok": True, "mapping": {}, "name": "Default (auto-detect)"})
+    return jsonify({"ok": True, "mapping": row["mapping"], "name": row["name"],
+                    "id": row["id"]})
+
+@app.route("/api/csv-mapping/<int:gate_id>", methods=["POST"])
+@login_required
+@role_required("ADMIN", "SUPERVISOR")
+def save_mapping(gate_id):
+    """
+    Save or update CSV column mapping for a gate.
+    mapping format: {"customer_col": "digiload_field", ...}
+    Example: {"NR_SSCC": "sscc", "POIDS_BRUT": "weight_kg", "QUAI": "gate_id"}
+    """
+    data    = request.get_json(silent=True) or {}
+    mapping = data.get("mapping", {})
+    name    = data.get("name", "Custom mapping")
+
+    import json as _json
+    # Validate all target fields are known
+    unknown = [v for v in mapping.values() if v not in _STANDARD_FIELDS]
+    if unknown:
+        return jsonify({"ok": False,
+                        "error": f"Unknown target fields: {unknown}",
+                        "valid_fields": sorted(_STANDARD_FIELDS)}), 400
+
+    existing = _q("SELECT id FROM csv_mappings WHERE gate_id=%s AND is_default=true",
+                  (gate_id,), fetchone=True)
+    if existing:
+        _q("UPDATE csv_mappings SET mapping=%s, name=%s, updated_at=now() WHERE id=%s",
+           (_json.dumps(mapping), name, existing["id"]))
+    else:
+        _q("INSERT INTO csv_mappings (gate_id, name, mapping, is_default) VALUES (%s,%s,%s,true)",
+           (gate_id, name, _json.dumps(mapping)))
+
+    _audit("csv_mapping.saved", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_id": gate_id, "fields": len(mapping)})
+    log.info(f"[csv_mapping] Gate {gate_id} — {len(mapping)} field(s) mapped")
+    return jsonify({"ok": True, "gate_id": gate_id, "fields": len(mapping)})
+
+@app.route("/api/csv-mapping/<int:gate_id>", methods=["DELETE"])
+@login_required
+@role_required("ADMIN")
+def delete_mapping(gate_id):
+    """Reset to auto-detect (delete custom mapping)."""
+    _q("DELETE FROM csv_mappings WHERE gate_id=%s", (gate_id,))
+    return jsonify({"ok": True, "message": "Mapping reset to auto-detect"})
+
+@app.route("/api/csv-mapping/preview", methods=["POST"])
+@login_required
+def preview_mapping():
+    """
+    Test a mapping against a sample CSV row.
+    Useful for the admin UI to preview what will be imported.
+    """
+    data    = request.get_json(silent=True) or {}
+    row     = data.get("row", {})
+    mapping = data.get("mapping", {})
+    result  = apply_csv_mapping(row, mapping)
+    return jsonify({"ok": True, "result": result})
+
+@app.route("/api/csv-mapping/fields")
+@login_required
+def list_standard_fields():
+    """List all valid Digiload standard field names for mapping UI."""
+    return jsonify({"ok": True, "fields": sorted(_STANDARD_FIELDS)})
+
 
 @app.route("/api/admin/gates", methods=["POST"])
 @role_required("ADMIN")
@@ -1620,6 +1919,7 @@ def _auto_delete_loop():
             log.error(f"[retention] {e}")
 
 threading.Thread(target=_auto_delete_loop, daemon=True).start()
+threading.Thread(target=_sftp_watcher_loop, daemon=True).start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

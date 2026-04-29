@@ -5,11 +5,11 @@
     "ip": "",
     "modules": {
         "video_tracking": {
-            "enabled": false,
+            "enabled": true,
             "license_key": ""
         },
         "multi_angle": {
-            "enabled": false,
+            "enabled": true,
             "license_key": ""
         }
     },
