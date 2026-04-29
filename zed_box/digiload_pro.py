@@ -10,7 +10,7 @@ Architecture:
 - Rotating log files — never fills disk with logs
 - Disk manager — auto-deletes old clips per retention policy
 - ERROR_FORKLIFT clips recorded (same as VALIDATED)
-- Minimal Flask status endpoint on port 5002 (read-only, no auth)
+- Minimal Flask status endpoint on port 5001 (read-only, no auth)
 """
 
 import pyzed.sl as sl
@@ -82,10 +82,27 @@ DEFAULT_CONFIG = {
     "gate_name": "Gate 1",
     "ip_mode":   "dhcp",
     "ip":        "",
+
+    # ── Layer 1: Core — hardcoded, never toggleable ────────────────────────
+    # aruco_detection, state_machine, sqlite_db, wms_connector are always on
+
+    # ── Layer 2: Key Features — enabled by default, toggleable per site ───
+    "features": {
+        "led_control":      True,   # WLED LED strip control
+        "disk_manager":     True,   # auto-delete clips by age/size
+        "hud":              True,   # OpenCV HUD overlay
+    },
+
+    # ── Layer 3: Plugins — disabled by default, licensed or per-customer ──
     "modules": {
         "video_tracking": {"enabled": False, "license_key": ""},
-        "multi_angle":    {"enabled": False, "license_key": ""}
+        "multi_angle":    {"enabled": False, "license_key": ""},
+        "sound_feedback": {"enabled": False},   # audio cues (Phase 8)
+        "driver_notify":  {"enabled": False},   # push to tablet (DL-024)
+        "sftp_watcher":   {"enabled": False},   # SFTP file drop (Phase 6)
+        "mqtt_input":     {"enabled": False},   # MQTT input (Phase 10)
     },
+
     "camera": {
         "primary":   {"serial": 0, "resolution": "HD1080", "fps": 60},
         "secondary": {"enabled": False, "serial": 0, "resolution": "HD720", "fps": 30},
@@ -101,7 +118,7 @@ DEFAULT_CONFIG = {
         "presets": {
             "standby":   {"r": 0,   "g": 0,   "b": 255, "effect": "breath",  "brightness": 128, "speed": 100},
             "armed":     {"r": 0,   "g": 255, "b": 0,   "effect": "static",  "brightness": 200, "speed": 128},
-            "error":     {"r": 255, "g": 0,   "b": 0,   "effect": "blink",   "brightness": 255, "speed": 100},
+            "error":     {"r": 255, "g": 0,   "b": 0,   "effect": "blink",   "brightness": 255, "speed": 240},
             "confirmed": {"r": 255, "g": 255, "b": 255, "effect": "static",  "brightness": 255, "speed": 128},
             "off":       {"r": 0,   "g": 0,   "b": 0,   "effect": "static",  "brightness": 0,   "speed": 128}
         }
@@ -439,6 +456,10 @@ class CameraManager:
 # ─────────────────────────────────────────────────────────────────────────────
 def init_db():
     with sqlite3.connect(_DB_FILE) as conn:
+        # WAL mode — allows safe concurrent reads/writes from multiple processes
+        # (digiload_pro.py + wms_connector.py + agent.py + future modules)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")   # safe + faster than FULL
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS tours (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -495,7 +516,7 @@ def init_db():
 
 @contextmanager
 def get_db():
-    conn=sqlite3.connect(_DB_FILE,timeout=5)
+    conn=sqlite3.connect(_DB_FILE,timeout=10)
     conn.row_factory=sqlite3.Row
     try: yield conn; conn.commit()
     except: conn.rollback(); raise
@@ -561,6 +582,10 @@ class AppState:
     def __init__(self):
         self.gate_id=1; self.gate_name="Gate 1"
         self.module_video_tracking=False; self.module_multi_angle=False
+        # Layer 2 feature flags
+        self.feature_led_control  = True
+        self.feature_disk_manager = True
+        self.feature_hud          = True
         self.ui_mode="MAIN"
         self.app_mode="IDLE"; self.active_tour_id=None
         self.current_sscc=None; self.last_action_time=0.0
@@ -594,6 +619,11 @@ class AppState:
         ]
 
 st=AppState()
+
+# Global state lock — all state machine transitions must acquire this
+# Prevents race conditions when multiple threads (poll_db, ArUco, timeout)
+# try to transition simultaneously
+_state_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -638,6 +668,15 @@ def load_config():
     logo_path=t.get("logo_path","logo.png")
     if os.path.exists(logo_path): st.logo_img=cv2.imread(logo_path,cv2.IMREAD_UNCHANGED)
     st.ui_text=d.get("ui_text",DEFAULT_CONFIG["ui_text"])
+
+    # ── Feature flags (Layer 2) ──────────────────────────────────────────────
+    feats = d.get("features", DEFAULT_CONFIG["features"])
+    st.feature_led_control  = feats.get("led_control",  True)
+    st.feature_disk_manager = feats.get("disk_manager", True)
+    st.feature_hud          = feats.get("hud",          True)
+
+    log.info(f"[features] led={st.feature_led_control} disk={st.feature_disk_manager} hud={st.feature_hud}")
+
     with get_db() as conn:
         conn.execute("UPDATE system_state SET gate_id=? WHERE id=1",(st.gate_id,))
 
@@ -699,6 +738,8 @@ def _led_cb(ok):
     if not ok: log.warning("[led] Send failed")
 
 def send_preset(name):
+    if not st.feature_led_control:
+        return   # LED control disabled for this installation
     p=st.led_presets.get(name,st.led_presets.get("off",{}))
     if not p: return
     payload=build_led_payload(p.get("r",0),p.get("g",0),p.get("b",0),
@@ -726,28 +767,35 @@ _PRESET_FOR_MODE={
 }
 
 def transition(mode, sscc=None, tour_id=None):
-    prev=st.app_mode; st.app_mode=mode; st.last_action_time=time.time()
-    if sscc    is not None: st.current_sscc  =sscc
-    if tour_id is not None: st.active_tour_id=tour_id
-    db_write_state(mode,st.current_sscc,st.active_tour_id)
-    send_preset(_PRESET_FOR_MODE.get(mode,"off"))
-    log.info(f"[state] {prev}→{mode}"+(f" sscc={sscc}" if sscc else "")+(f" tour={tour_id}" if tour_id else ""))
-    if mode=="VALIDATED" and st.active_tour_id:
-        loaded,total=db_get_progress(st.active_tour_id)
-        trigger_validated_anim(st.current_sscc,loaded,total)
+    with _state_lock:
+        prev=st.app_mode; st.app_mode=mode; st.last_action_time=time.time()
+        if sscc    is not None: st.current_sscc  =sscc
+        if tour_id is not None: st.active_tour_id=tour_id
+        db_write_state(mode,st.current_sscc,st.active_tour_id)
+        send_preset(_PRESET_FOR_MODE.get(mode,"off"))
+        log.info(f"[state] {prev}→{mode}"+(f" sscc={sscc}" if sscc else "")+(f" tour={tour_id}" if tour_id else ""))
+        do_validated   = (mode=="VALIDATED"      and st.active_tour_id)
+        do_err_fork    = (mode=="ERROR_FORKLIFT")
+        tour_snap      = st.active_tour_id
+        sscc_snap      = st.current_sscc
+
+    # ── Side effects outside the lock (avoid deadlocks from nested calls) ──
+    if do_validated:
+        loaded,total=db_get_progress(tour_snap)
+        trigger_validated_anim(sscc_snap,loaded,total)
         if st.module_video_tracking and st.recorder and st.pri_buffer:
-            st.recorder.trigger(st.pri_buffer,st.sec_buffer,st.current_sscc,st.active_tour_id,"VALIDATED")
+            st.recorder.trigger(st.pri_buffer,st.sec_buffer,sscc_snap,tour_snap,"VALIDATED")
         _wms_notify("pallet.loaded",{
             "gate_id":st.gate_id,"gate_name":st.gate_name,
-            "sscc":st.current_sscc,"forklift_id":st.target_id,
-            "loaded_at":datetime.now().isoformat(),"tour_id":st.active_tour_id,
+            "sscc":sscc_snap,"forklift_id":st.target_id,
+            "loaded_at":datetime.now().isoformat(),"tour_id":tour_snap,
         })
-    if mode=="ERROR_FORKLIFT":
+    if do_err_fork:
         if st.module_video_tracking and st.recorder and st.pri_buffer:
-            st.recorder.trigger(st.pri_buffer,st.sec_buffer,st.current_sscc,st.active_tour_id,"ERROR_FORKLIFT")
+            st.recorder.trigger(st.pri_buffer,st.sec_buffer,sscc_snap,tour_snap,"ERROR_FORKLIFT")
         _wms_notify("gate.error",{
             "gate_id":st.gate_id,"gate_name":st.gate_name,"error_type":"WRONG_FORKLIFT",
-            "sscc":st.current_sscc,"timestamp":datetime.now().isoformat(),
+            "sscc":sscc_snap,"timestamp":datetime.now().isoformat(),
         })
 
 def poll_db_activation():
@@ -1077,6 +1125,8 @@ def handle_key(key,cam):
         if key in (13,10): save_config(); st.ui_mode="MAIN"
     return True
 
+# Status endpoint removed — served by agent.py on port 5002 (DL-020)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1084,7 +1134,7 @@ def run():
     log.info("="*60)
     log.info("Digiload Pro v2.0 — Starting")
     log.info("="*60)
-    init_db();load_config()
+    init_db(); load_config()
     state=db_read_state()
     st.app_mode      =state.get("app_mode","IDLE")
     st.active_tour_id=state.get("active_tour_id",None)
@@ -1095,8 +1145,10 @@ def run():
     if st.module_multi_angle:    log.info(f"[modules] MultiAngle ACTIVE")
     threading.Thread(target=poll_db_activation,daemon=True).start()
     if st.module_video_tracking:
-        threading.Thread(target=disk_manager_loop,args=(st.rec_dir,st.ret_days,st.max_disk),daemon=True).start()
-    log.info("[status] http://0.0.0.0:5001/status")
+        if st.feature_disk_manager:
+            threading.Thread(target=disk_manager_loop,args=(st.rec_dir,st.ret_days,st.max_disk),daemon=True).start()
+        else:
+            log.info("[features] Disk manager disabled for this installation")
     cam=CameraManager(); cfg=st.raw_config.get("camera",{})
     if not cam.open_primary(cfg.get("primary",DEFAULT_CONFIG["camera"]["primary"])):
         log.error("Cannot open primary camera — exit"); return

@@ -116,7 +116,9 @@ def load_config():
 # DATABASE
 # ─────────────────────────────────────────────────────────────────────────────
 def init_db():
-    with sqlite3.connect(_DB_FILE, timeout=5) as conn:
+    with sqlite3.connect(_DB_FILE, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS wms_queue (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
