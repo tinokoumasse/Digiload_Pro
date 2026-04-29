@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Digiload — Fleet Health</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--bg2:#13182a;--bg3:#1c2238;
+  --border:#2a3048;--border-hi:#3d4566;
+  --blue:#5b8def;--green:#48d188;--red:#ef5050;--amber:#f5b041;
+  --text:#f0f4ff;--text2:#a8b3d0;--text3:#6b7894;
+  --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'SF Mono','Menlo','Consolas',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:var(--sans);font-size:13px}
+body{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+
+header{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 24px;display:flex;justify-content:space-between;align-items:center}
+.logo{font-weight:700;font-size:14px;letter-spacing:2px;font-family:var(--mono)}
+.logo .accent{color:var(--blue)}
+.user{font-size:11px;color:var(--text2)}
+.user a{color:var(--blue);text-decoration:none;margin-left:14px}
+
+main{overflow:auto;padding:24px;display:grid;gap:20px}
+
+/* SUMMARY */
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:16px;display:flex;flex-direction:column;gap:6px}
+.kpi-lbl{font-size:10px;font-weight:600;letter-spacing:1.5px;
+  color:var(--text3);text-transform:uppercase}
+.kpi-val{font-size:28px;font-weight:700;line-height:1}
+.kpi-sub{font-size:11px;color:var(--text2)}
+.kpi.green .kpi-val{color:var(--green)}
+.kpi.red   .kpi-val{color:var(--red)}
+.kpi.amber .kpi-val{color:var(--amber)}
+.kpi.blue  .kpi-val{color:var(--blue)}
+
+/* SECTIONS */
+.section{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:18px}
+.section-title{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--text3);
+  text-transform:uppercase;margin-bottom:14px;padding-bottom:10px;
+  border-bottom:1px solid var(--border);display:flex;justify-content:space-between;
+  align-items:center}
+
+/* GATE CARDS */
+.gate-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.gate-card{background:var(--bg3);border:1px solid var(--border);border-radius:6px;
+  padding:14px;transition:all .2s}
+.gate-card:hover{border-color:var(--border-hi)}
+.gate-card.offline{opacity:.6;border-color:rgba(239,80,80,.3)}
+.gate-card.warn{border-color:rgba(245,176,65,.3)}
+.gate-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.gate-name{font-weight:700;font-size:13px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.green{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.red{background:var(--red)}
+.gate-mode{font-size:10px;color:var(--text3);font-family:var(--mono)}
+
+.metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}
+.metric{text-align:center}
+.metric-lbl{font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase}
+.metric-val{font-size:15px;font-weight:600;margin-top:2px;font-family:var(--mono)}
+.metric-val.warn{color:var(--amber)}
+.metric-val.bad{color:var(--red)}
+
+.indicators{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.ind{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;letter-spacing:.5px}
+.ind.green{background:rgba(72,209,136,.15);color:var(--green)}
+.ind.red{background:rgba(239,80,80,.15);color:var(--red)}
+.ind.amber{background:rgba(245,176,65,.15);color:var(--amber)}
+.ind.blue{background:rgba(91,141,239,.15);color:var(--blue)}
+
+/* ALERTS */
+.alert-list{display:flex;flex-direction:column;gap:8px}
+.alert{padding:10px 14px;border-radius:6px;display:flex;align-items:center;gap:12px;
+  font-size:12px}
+.alert-red{background:rgba(239,80,80,.1);border:1px solid rgba(239,80,80,.3)}
+.alert-amber{background:rgba(245,176,65,.1);border:1px solid rgba(245,176,65,.3)}
+.alert-icon{font-size:18px}
+.alert-body{flex:1}
+.alert-meta{font-size:10px;color:var(--text3);margin-top:2px;font-family:var(--mono)}
+
+/* DEPLOY */
+.deploy{display:grid;grid-template-columns:1fr 1.2fr;gap:18px}
+@media(max-width:900px){.deploy{grid-template-columns:1fr}}
+.deploy-form{display:flex;flex-direction:column;gap:12px}
+.deploy-form select,.deploy-form input{
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  padding:8px 10px;border-radius:4px;font-family:inherit;font-size:12px;width:100%}
+.deploy-gates{display:flex;flex-direction:column;gap:6px;
+  max-height:240px;overflow:auto;padding:8px;background:var(--bg);
+  border:1px solid var(--border);border-radius:4px}
+.deploy-gate{display:flex;align-items:center;gap:8px;padding:4px;font-size:12px}
+.deploy-gate input{width:auto;margin:0}
+.btn{padding:8px 14px;border-radius:4px;border:1px solid var(--border);
+  background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px;
+  font-family:inherit;transition:all .15s}
+.btn:hover{background:var(--border-hi)}
+.btn-primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-primary:hover{background:#4778d8}
+.btn-sm{padding:5px 10px;font-size:11px}
+
+.deploy-status{padding:12px;background:var(--bg);border:1px solid var(--border);
+  border-radius:6px;font-family:var(--mono);font-size:11px;
+  max-height:300px;overflow:auto;white-space:pre-wrap}
+.deploy-progress{font-family:var(--mono);font-size:13px;margin-top:8px}
+
+.btn-row{display:flex;gap:8px;margin-top:8px}
+.empty{color:var(--text3);text-align:center;padding:20px;font-style:italic;font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">DIGILOAD <span class="accent">FLEET HEALTH</span></div>
+  <div class="user">
+    {{ user.email }} ({{ user.role }})
+    <a href="/">Dashboard</a>
+    <a href="/admin/super">MDM</a>
+    <a href="/logout">Logout</a>
+  </div>
+</header>
+
+<main>
+
+  <!-- SUMMARY KPIS -->
+  <div class="summary" id="summary">
+    <div class="kpi green"><div class="kpi-lbl">Online</div><div class="kpi-val" id="kpi-online">—</div><div class="kpi-sub">of <span id="kpi-total">0</span> gates</div></div>
+    <div class="kpi red"><div class="kpi-lbl">Offline</div><div class="kpi-val" id="kpi-offline">—</div><div class="kpi-sub">need attention</div></div>
+    <div class="kpi amber"><div class="kpi-lbl">Alerts</div><div class="kpi-val" id="kpi-alerts">—</div><div class="kpi-sub">active issues</div></div>
+    <div class="kpi blue"><div class="kpi-lbl">Active Missions</div><div class="kpi-val" id="kpi-missions">—</div><div class="kpi-sub">in progress</div></div>
+    <div class="kpi"><div class="kpi-lbl">Avg CPU</div><div class="kpi-val" id="kpi-cpu">—</div><div class="kpi-sub">across fleet</div></div>
+    <div class="kpi"><div class="kpi-lbl">Total Disk Free</div><div class="kpi-val" id="kpi-disk">—</div><div class="kpi-sub">aggregated</div></div>
+  </div>
+
+  <!-- ALERTS -->
+  <div class="section">
+    <div class="section-title">
+      Active Alerts
+      <span style="font-size:10px;color:var(--text3)">Auto-refresh 10s</span>
+    </div>
+    <div class="alert-list" id="alerts">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- GATE GRID -->
+  <div class="section">
+    <div class="section-title">
+      Per-Gate Status
+      <button class="btn btn-sm" onclick="loadHealth()">↻ Refresh</button>
+    </div>
+    <div class="gate-grid" id="gateGrid">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ROLLING DEPLOY -->
+  <div class="section">
+    <div class="section-title">Rolling Deploy</div>
+    <div class="deploy">
+      <div class="deploy-form">
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:6px">Strategy</label>
+          <select id="strategy">
+            <option value="rolling">Rolling — one gate at a time (safe)</option>
+            <option value="all">All — parallel push (fast but risky)</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:6px">Version</label>
+          <input type="text" id="version" value="latest" placeholder="e.g. 2.1.0 or 'latest'"/>
+        </div>
+
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:6px">
+            Target Gates <span id="selCount" style="color:var(--blue)">(0 selected)</span>
+          </label>
+          <div class="deploy-gates" id="deployGates">
+            <div class="empty">Loading gates...</div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-sm" onclick="selectAll()">Select All</button>
+            <button class="btn btn-sm" onclick="selectNone()">Select None</button>
+            <button class="btn btn-sm" onclick="selectOnline()">Online Only</button>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="restartCheck" checked/> Restart app after deploy
+          </label>
+        </div>
+
+        <button class="btn btn-primary" onclick="startDeploy()" id="deployBtn">🚀 Start Deploy</button>
+      </div>
+
+      <div>
+        <div class="deploy-progress" id="deployProgress">No deploy in progress</div>
+        <div class="deploy-status" id="deployStatus" style="margin-top:8px">Click Start Deploy to begin</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+let gateData = [];
+let activeJob = null;
+
+async function loadHealth() {
+  try {
+    const r = await fetch('/api/fleet/health');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    gateData = d.gates || [];
+    renderSummary(d);
+    renderAlerts(d);
+    renderGates();
+    renderDeployList();
+  } catch(e) {
+    console.error('Health load failed:', e);
+  }
+}
+
+function renderSummary(d) {
+  const total = gateData.length;
+  const online = gateData.filter(g => g.online).length;
+  const offline = total - online;
+  const missions = gateData.filter(g => g.app_mode && !['IDLE','UNKNOWN'].includes(g.app_mode)).length;
+
+  const cpus = gateData.filter(g => g.cpu_pct != null).map(g => g.cpu_pct);
+  const avgCpu = cpus.length ? Math.round(cpus.reduce((a,b)=>a+b,0)/cpus.length) : 0;
+
+  const disks = gateData.filter(g => g.disk_free_gb != null).map(g => g.disk_free_gb);
+  const totalDisk = disks.reduce((a,b)=>a+b,0);
+
+  const alerts = (d.alerts || []).length;
+
+  document.getElementById('kpi-total').textContent     = total;
+  document.getElementById('kpi-online').textContent    = online;
+  document.getElementById('kpi-offline').textContent   = offline;
+  document.getElementById('kpi-alerts').textContent    = alerts;
+  document.getElementById('kpi-missions').textContent  = missions;
+  document.getElementById('kpi-cpu').textContent       = avgCpu + '%';
+  document.getElementById('kpi-disk').textContent      = totalDisk.toFixed(0) + ' GB';
+}
+
+function renderAlerts(d) {
+  const alerts = d.alerts || [];
+  const c = document.getElementById('alerts');
+
+  if (alerts.length === 0) {
+    c.innerHTML = '<div class="empty" style="color:var(--green)">✓ No active alerts</div>';
+    return;
+  }
+
+  c.innerHTML = alerts.map(a => {
+    const icon = a.severity === 'critical' ? '🚨' :
+                 a.severity === 'warning'  ? '⚠️' : 'ℹ️';
+    const cls  = a.severity === 'critical' ? 'alert-red' : 'alert-amber';
+    return `<div class="alert ${cls}">
+      <div class="alert-icon">${icon}</div>
+      <div class="alert-body">
+        <div>${a.message}</div>
+        <div class="alert-meta">Gate ${a.gate_id || '—'} · ${a.type || ''} · ${a.timestamp || ''}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderGates() {
+  const c = document.getElementById('gateGrid');
+  if (gateData.length === 0) {
+    c.innerHTML = '<div class="empty">No gates registered</div>';
+    return;
+  }
+
+  c.innerHTML = gateData.map(g => {
+    const cpuClass  = g.cpu_pct  > 80 ? 'bad' : g.cpu_pct  > 60 ? 'warn' : '';
+    const diskClass = g.disk_free_gb < 5 ? 'bad' : g.disk_free_gb < 15 ? 'warn' : '';
+    const ramMb = g.ram_mb != null ? Math.round(g.ram_mb) : null;
+
+    const cardClass = !g.online ? 'gate-card offline' :
+                      (cpuClass === 'bad' || diskClass === 'bad') ? 'gate-card warn' : 'gate-card';
+
+    const indicators = [];
+    if (g.camera_ok)         indicators.push('<span class="ind green">📷 OK</span>');
+    else if (g.online)       indicators.push('<span class="ind red">📷 FAIL</span>');
+    if (g.modules_active && g.modules_active.length) {
+      g.modules_active.forEach(m => indicators.push(`<span class="ind blue">${m}</span>`));
+    }
+    if (cpuClass === 'bad')  indicators.push('<span class="ind red">High CPU</span>');
+    if (diskClass === 'bad') indicators.push('<span class="ind red">Low Disk</span>');
+
+    return `<div class="${cardClass}">
+      <div class="gate-head">
+        <div>
+          <span class="dot ${g.online?'green':'red'}"></span>
+          <span class="gate-name">Gate ${g.id} — ${g.name}</span>
+        </div>
+        <span class="gate-mode">${g.app_mode || '—'}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text3);font-family:var(--mono)">${g.ip || 'no heartbeat'}</div>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-lbl">CPU</div>
+          <div class="metric-val ${cpuClass}">${g.cpu_pct != null ? g.cpu_pct+'%' : '—'}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl">RAM</div>
+          <div class="metric-val">${ramMb != null ? ramMb+'M' : '—'}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl">Disk</div>
+          <div class="metric-val ${diskClass}">${g.disk_free_gb != null ? g.disk_free_gb.toFixed(1)+'G' : '—'}</div>
+        </div>
+      </div>
+      <div class="indicators">${indicators.join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Rolling deploy ──────────────────────────────────────────────────────────
+function renderDeployList() {
+  const c = document.getElementById('deployGates');
+  if (gateData.length === 0) { c.innerHTML = '<div class="empty">No gates</div>'; return; }
+  c.innerHTML = gateData.map(g =>
+    `<label class="deploy-gate">
+      <input type="checkbox" class="deploy-cb" value="${g.id}" ${g.online?'':'disabled'} onchange="updateSelCount()"/>
+      <span class="dot ${g.online?'green':'red'}"></span>
+      <span>Gate ${g.id} — ${g.name}</span>
+      ${!g.online ? '<span style="margin-left:auto;font-size:10px;color:var(--text3)">(offline)</span>' : ''}
+    </label>`).join('');
+  updateSelCount();
+}
+
+function updateSelCount() {
+  const n = document.querySelectorAll('.deploy-cb:checked').length;
+  document.getElementById('selCount').textContent = `(${n} selected)`;
+}
+
+function selectAll()    { document.querySelectorAll('.deploy-cb:not(:disabled)').forEach(cb => cb.checked = true);  updateSelCount(); }
+function selectNone()   { document.querySelectorAll('.deploy-cb').forEach(cb => cb.checked = false); updateSelCount(); }
+function selectOnline() { document.querySelectorAll('.deploy-cb:not(:disabled)').forEach(cb => cb.checked = true); updateSelCount(); }
+
+async function startDeploy() {
+  const ids = Array.from(document.querySelectorAll('.deploy-cb:checked')).map(cb => parseInt(cb.value));
+  if (ids.length === 0) { alert('Select at least one gate'); return; }
+  const strategy = document.getElementById('strategy').value;
+  const version  = document.getElementById('version').value;
+  const restart  = document.getElementById('restartCheck').checked;
+
+  if (!confirm(`Deploy version "${version}" to ${ids.length} gate(s) using "${strategy}" strategy?\n\nApp will ${restart ? 'restart' : 'NOT restart'} after deploy.`))
+    return;
+
+  document.getElementById('deployBtn').disabled = true;
+  document.getElementById('deployStatus').textContent = 'Starting deploy...';
+
+  try {
+    const r = await fetch('/api/fleet/deploy', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({gate_ids: ids, strategy, version, restart})
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      document.getElementById('deployStatus').textContent = 'Failed: ' + d.error;
+      document.getElementById('deployBtn').disabled = false;
+      return;
+    }
+    activeJob = d.job_id;
+    pollDeployStatus();
+  } catch(e) {
+    document.getElementById('deployStatus').textContent = 'Error: ' + e.message;
+    document.getElementById('deployBtn').disabled = false;
+  }
+}
+
+async function pollDeployStatus() {
+  if (!activeJob) return;
+  try {
+    const r = await fetch(`/api/fleet/deploy/${activeJob}`);
+    const d = await r.json();
+    if (!d.ok) {
+      document.getElementById('deployStatus').textContent = 'Job not found';
+      document.getElementById('deployBtn').disabled = false;
+      return;
+    }
+
+    const lines = (d.results || []).map(res =>
+      `[${res.status === 'success' ? '✓' : res.status === 'failed' ? '✗' : '…'}] Gate ${res.gate_id} — ${res.message || res.status}`
+    );
+    document.getElementById('deployProgress').textContent =
+      `${d.status.toUpperCase()} · ${d.progress}/${d.total} gates`;
+    document.getElementById('deployStatus').textContent = lines.join('\n') || 'Working...';
+
+    if (d.status === 'running') {
+      setTimeout(pollDeployStatus, 1500);
+    } else {
+      activeJob = null;
+      document.getElementById('deployBtn').disabled = false;
+      loadHealth();
+    }
+  } catch(e) {
+    document.getElementById('deployStatus').textContent += '\nPolling error: ' + e.message;
+  }
+}
+
+// ── Auto-refresh ───────────────────────────────────────────────────────────
+loadHealth();
+setInterval(loadHealth, 10000);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Digiload MDM — Internal</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--bg2:#13182a;--bg3:#1c2238;
+  --border:#2a3048;--border-hi:#3d4566;
+  --blue:#5b8def;--green:#48d188;--red:#ef5050;--amber:#f5b041;
+  --text:#f0f4ff;--text2:#a8b3d0;--text3:#6b7894;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:'SF Mono','Menlo','Consolas',monospace;font-size:13px}
+body{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+
+/* HEADER */
+header{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:10px 20px;display:flex;justify-content:space-between;align-items:center}
+.logo{font-weight:700;font-size:14px;letter-spacing:2px}
+.logo .accent{color:var(--blue)}
+.user{font-size:11px;color:var(--text2)}
+.user a{color:var(--blue);text-decoration:none;margin-left:12px}
+
+/* TABS */
+.tabs{display:flex;gap:0;background:var(--bg2);border-bottom:1px solid var(--border);
+  overflow-x:auto;flex-shrink:0}
+.tab{padding:10px 16px;cursor:pointer;color:var(--text2);font-size:12px;
+  border-right:1px solid var(--border);white-space:nowrap;
+  transition:all .15s;font-weight:600;letter-spacing:.5px}
+.tab:hover{background:var(--bg3);color:var(--text)}
+.tab.active{background:var(--bg);color:var(--blue);border-bottom:2px solid var(--blue);
+  margin-bottom:-1px}
+
+/* MAIN */
+main{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+.toolbar{padding:10px 20px;background:var(--bg2);border-bottom:1px solid var(--border);
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.toolbar select,.toolbar button{font-family:inherit;font-size:12px}
+.gate-select{background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  padding:6px 10px;border-radius:4px;min-width:200px}
+.btn{padding:6px 12px;border-radius:4px;border:1px solid var(--border);
+  background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px;
+  font-family:inherit;transition:all .15s}
+.btn:hover{background:var(--border-hi);border-color:var(--blue)}
+.btn-primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-primary:hover{background:#4778d8;border-color:#4778d8}
+.btn-danger{color:var(--red);border-color:var(--red)}
+.btn-danger:hover{background:rgba(239,80,80,.15)}
+.btn-sm{padding:4px 8px;font-size:11px}
+
+.content{padding:20px;overflow:auto}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  padding:18px;margin-bottom:16px}
+.card-title{font-size:11px;font-weight:700;letter-spacing:2px;
+  color:var(--text3);text-transform:uppercase;margin-bottom:14px;
+  padding-bottom:10px;border-bottom:1px solid var(--border)}
+
+/* TABLES */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 10px;font-weight:600;font-size:10px;
+  letter-spacing:1.5px;text-transform:uppercase;color:var(--text3);
+  border-bottom:1px solid var(--border);background:var(--bg3)}
+td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text2)}
+tr:hover td{background:rgba(91,141,239,.04)}
+.dot-online{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 8px var(--green);margin-right:6px}
+.dot-offline{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--red);margin-right:6px}
+
+/* FORMS */
+.form-row{display:grid;grid-template-columns:180px 1fr;gap:14px;
+  align-items:center;margin-bottom:12px}
+.form-row label{font-size:11px;color:var(--text2);letter-spacing:.5px}
+.form-row input,.form-row select,.form-row textarea{
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  padding:7px 10px;border-radius:4px;font-family:inherit;font-size:12px;width:100%}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{
+  outline:none;border-color:var(--blue)}
+.form-row textarea{min-height:90px;resize:vertical;font-family:'SF Mono',monospace}
+
+/* TOGGLES */
+.toggle-row{display:grid;grid-template-columns:1fr auto;gap:14px;
+  padding:12px 0;border-bottom:1px solid var(--border);align-items:center}
+.toggle-row:last-child{border-bottom:none}
+.toggle-name{font-size:13px;color:var(--text)}
+.toggle-desc{font-size:11px;color:var(--text3);margin-top:2px}
+.tier-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;
+  font-weight:700;letter-spacing:.5px;margin-left:6px}
+.tier-2{background:#3a2820;color:var(--amber)}
+.tier-3{background:#2a1830;color:#c889e0}
+.toggle{position:relative;width:42px;height:22px;background:var(--bg3);
+  border-radius:11px;cursor:pointer;transition:all .2s;border:1px solid var(--border)}
+.toggle.on{background:var(--blue);border-color:var(--blue)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;
+  width:16px;height:16px;background:var(--text);border-radius:50%;transition:transform .2s}
+.toggle.on::after{transform:translateX(20px)}
+.toggle.disabled{opacity:.5;cursor:not-allowed}
+
+/* SECTIONS */
+.section-title{font-size:11px;font-weight:700;letter-spacing:2px;color:var(--blue);
+  text-transform:uppercase;margin:18px 0 10px}
+.section-title:first-child{margin-top:0}
+
+/* ALERTS */
+.alert{padding:10px 14px;border-radius:4px;font-size:12px;margin-bottom:12px}
+.alert-info{background:rgba(91,141,239,.1);border:1px solid rgba(91,141,239,.3);color:#a8c5ff}
+.alert-warn{background:rgba(245,176,65,.1);border:1px solid rgba(245,176,65,.3);color:var(--amber)}
+.alert-success{background:rgba(72,209,136,.1);border:1px solid rgba(72,209,136,.3);color:var(--green)}
+.alert-error{background:rgba(239,80,80,.1);border:1px solid rgba(239,80,80,.3);color:var(--red)}
+
+/* GRID */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+
+/* BADGES */
+.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;
+  font-weight:600;letter-spacing:.5px}
+.badge-green{background:rgba(72,209,136,.15);color:var(--green)}
+.badge-red{background:rgba(239,80,80,.15);color:var(--red)}
+.badge-amber{background:rgba(245,176,65,.15);color:var(--amber)}
+.badge-blue{background:rgba(91,141,239,.15);color:var(--blue)}
+
+.hidden{display:none}
+.empty{color:var(--text3);font-style:italic;padding:20px;text-align:center}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">DIGILOAD <span class="accent">MDM</span></div>
+  <div class="user">
+    {{ user.email }} ({{ user.role }})
+    <a href="/">Customer Dashboard</a>
+    <a href="/logout">Logout</a>
+  </div>
+</header>
+
+<main>
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-tab="gates">🚪 Gates</div>
+    <div class="tab" data-tab="config">⚙️ Configuration</div>
+    <div class="tab" data-tab="zone">📐 Gate Zone</div>
+    <div class="tab" data-tab="plugins">🧩 Features &amp; Plugins</div>
+    <div class="tab" data-tab="csv">📋 CSV Mapping</div>
+    <div class="tab" data-tab="print">🖨 Print Center</div>
+    <div class="tab" data-tab="health">📊 Health</div>
+    <div class="tab" data-tab="logs">📜 Logs</div>
+    <div class="tab" data-tab="deploy">🚀 Deploy</div>
+    <div class="tab" data-tab="audit">🔍 Audit</div>
+    <div class="tab" data-tab="backup">💾 Backups</div>
+    <div class="tab" data-tab="api">🔑 API Keys</div>
+    <div class="tab" data-tab="users">👥 Users</div>
+    <div class="tab" data-tab="licenses">📜 Licenses</div>
+    <div class="tab" data-tab="sftp">📁 SFTP</div>
+  </div>
+
+  <div class="toolbar">
+    <span style="font-size:11px;color:var(--text3);letter-spacing:1.5px">TARGET:</span>
+    <select class="gate-select" id="gateSelect" onchange="onGateChange()">
+      <option value="ALL">🌐 ALL GATES (bulk)</option>
+    </select>
+    <button class="btn" onclick="refresh()">↻ Refresh</button>
+    <span id="statusText" style="margin-left:auto;font-size:11px;color:var(--text3)"></span>
+  </div>
+
+  <div class="content" id="content">
+    <div class="empty">Loading...</div>
+  </div>
+</main>
+
+<script>
+let allGates       = [];
+let selectedGate   = "ALL";
+let activeTab      = "gates";
+let gateConfig     = null;   // current gate's config (when single gate selected)
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    activeTab = t.dataset.tab;
+    renderTab();
+  });
+});
+
+document.getElementById('gateSelect').onchange = onGateChange;
+
+function onGateChange() {
+  selectedGate = document.getElementById('gateSelect').value;
+  renderTab();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+async function init() {
+  await loadGates();
+  renderTab();
+}
+
+async function refresh() {
+  await loadGates();
+  renderTab();
+}
+
+async function loadGates() {
+  setStatus('Loading gates...');
+  try {
+    const r = await fetch('/api/super/gates');
+    const d = await r.json();
+    if (d.ok) {
+      allGates = d.gates;
+      const sel = document.getElementById('gateSelect');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="ALL">🌐 ALL GATES (bulk)</option>' +
+        allGates.map(g =>
+          `<option value="${g.id}">${g.online ? '🟢' : '🔴'} Gate ${g.id} — ${g.name}</option>`
+        ).join('');
+      sel.value = cur || 'ALL';
+      setStatus(`${allGates.length} gates · ${allGates.filter(g => g.online).length} online`);
+    }
+  } catch(e) {
+    setStatus('Failed to load gates', 'error');
+  }
+}
+
+function setStatus(msg, type='info') {
+  const el = document.getElementById('statusText');
+  el.textContent = msg;
+  el.style.color = type === 'error' ? 'var(--red)' :
+                   type === 'success' ? 'var(--green)' : 'var(--text3)';
+  if (type === 'success') setTimeout(() => el.textContent = '', 3000);
+}
+
+// ── Render tabs ────────────────────────────────────────────────────────────
+function renderTab() {
+  const c = document.getElementById('content');
+  if (activeTab === 'gates')      c.innerHTML = renderGates();
+  else if (activeTab === 'config')  c.innerHTML = renderConfig();
+  else if (activeTab === 'zone')    c.innerHTML = renderZone();
+  else if (activeTab === 'plugins') c.innerHTML = renderPlugins();
+  else if (activeTab === 'csv')     c.innerHTML = renderCSV();
+  else if (activeTab === 'print')   c.innerHTML = renderPrint();
+  else if (activeTab === 'health')  c.innerHTML = renderHealth();
+  else if (activeTab === 'logs')    c.innerHTML = renderLogs();
+  else if (activeTab === 'deploy')  c.innerHTML = renderDeploy();
+  else if (activeTab === 'audit')   c.innerHTML = renderAudit();
+  else if (activeTab === 'backup')  c.innerHTML = renderBackup();
+  else if (activeTab === 'api')     c.innerHTML = renderAPI();
+  else if (activeTab === 'users')   c.innerHTML = renderUsers();
+  else if (activeTab === 'licenses') c.innerHTML = renderLicenses();
+  else if (activeTab === 'sftp')    c.innerHTML = renderSFTP();
+}
+
+function renderGates() {
+  const rows = allGates.map(g => `
+    <tr>
+      <td>${g.online ? '<span class="dot-online"></span>' : '<span class="dot-offline"></span>'}${g.online ? 'ONLINE' : 'OFFLINE'}</td>
+      <td><strong>${g.id}</strong></td>
+      <td>${g.name}</td>
+      <td>${g.ip || '—'}</td>
+      <td>${g.app_mode || '—'}</td>
+      <td>${g.app_version || '—'}</td>
+      <td>${g.cpu_pct != null ? g.cpu_pct + '%' : '—'}</td>
+      <td>${g.disk_free_gb != null ? g.disk_free_gb.toFixed(1) + ' GB' : '—'}</td>
+      <td>${g.camera_ok ? '<span class="badge badge-green">OK</span>' : '<span class="badge badge-red">FAIL</span>'}</td>
+      <td>
+        <button class="btn btn-sm" onclick="renameGate(${g.id}, '${g.name.replace(/'/g,'')}')">Rename</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteGate(${g.id})">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <div class="card">
+      <div class="card-title">Registered Gates (${allGates.length})</div>
+      <table>
+        <thead><tr>
+          <th>Status</th><th>ID</th><th>Name</th><th>IP</th>
+          <th>Mode</th><th>Version</th><th>CPU</th><th>Disk</th><th>Camera</th><th>Actions</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="10" class="empty">No gates registered</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">Register New Gate</div>
+      <div class="form-row">
+        <label>Gate ID</label><input type="number" id="newGateId" placeholder="3"/>
+      </div>
+      <div class="form-row">
+        <label>Name</label><input type="text" id="newGateName" placeholder="Quai Nord 3"/>
+      </div>
+      <button class="btn btn-primary" onclick="addGate()">+ Register</button>
+    </div>
+  `;
+}
+
+async function renameGate(id, current) {
+  const name = prompt('New name for gate ' + id + ':', current);
+  if (!name) return;
+  await fetch(`/api/super/gate/${id}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({name})
+  });
+  refresh();
+}
+
+async function deleteGate(id) {
+  if (!confirm(`DELETE gate ${id}? This cannot be undone.`)) return;
+  await fetch(`/api/super/gate/${id}`, {method: 'DELETE'});
+  refresh();
+}
+
+async function addGate() {
+  const id   = document.getElementById('newGateId').value;
+  const name = document.getElementById('newGateName').value;
+  if (!id || !name) { alert('ID and name required'); return; }
+  await fetch('/api/admin/gates', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id: parseInt(id), name})
+  });
+  refresh();
+}
+
+// ── Gate Zone Editor ───────────────────────────────────────────────────────
+function renderZone() {
+  if (selectedGate === 'ALL') {
+    return '<div class="alert alert-warn">Gate zone is per-gate. Select a specific gate from the dropdown above.</div>';
+  }
+  const g = allGates.find(x => x.id == selectedGate);
+  if (!g) return '<div class="empty">Gate not found</div>';
+  if (!g.online) {
+    return `<div class="alert alert-error">Gate ${g.id} is OFFLINE — cannot edit zone (live preview unavailable)</div>`;
+  }
+  if (!g.ip) {
+    return `<div class="alert alert-error">Gate ${g.id} IP unknown — heartbeat needed first</div>`;
+  }
+
+  setTimeout(initZoneEditor, 100);
+
+  return `
+    <div class="alert alert-info">
+      Drawing zone on <strong>Gate ${g.id} — ${g.name}</strong> · IP ${g.ip}
+      <br/>Click + drag to draw the rectangular zone where the ArUco marker must pass.
+      The forklift is only validated when its marker enters this zone.
+    </div>
+
+    <div class="card">
+      <div class="card-title">Live Camera Preview + Zone Drawing</div>
+      <div style="position:relative;display:inline-block;background:#000;border-radius:6px;overflow:hidden;max-width:100%">
+        <img id="zonePreview" style="display:block;max-width:100%;max-height:600px"/>
+        <canvas id="zoneCanvas" style="position:absolute;top:0;left:0;cursor:crosshair"></canvas>
+      </div>
+
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn" onclick="loadZonePreview()">↻ Refresh Preview</button>
+        <button class="btn btn-danger" onclick="clearZone()">✕ Clear</button>
+        <button class="btn btn-primary" onclick="saveZone()" id="saveZoneBtn" disabled>💾 Save Zone</button>
+        <span id="zoneCoords" style="font-size:11px;color:var(--text3);margin-left:auto"></span>
+      </div>
+
+      <div class="alert alert-info" style="margin-top:14px;font-size:11px">
+        💡 The zone is saved in <code>config.gate.rect = [x, y, width, height]</code> on the ZED Box.
+        After save, the app restarts automatically and applies the new zone within 10 seconds.
+      </div>
+    </div>
+  `;
+}
+
+// Zone editor state
+let zoneCtx       = null;
+let zoneStart     = null;
+let zoneRect      = null;   // [x, y, w, h] in IMAGE coordinates
+let zoneImageW    = 0, zoneImageH = 0;
+let zoneCanvasW   = 0, zoneCanvasH = 0;
+
+async function initZoneEditor() {
+  const img    = document.getElementById('zonePreview');
+  const canvas = document.getElementById('zoneCanvas');
+  if (!img || !canvas) return;
+
+  zoneCtx = canvas.getContext('2d');
+
+  // Load existing zone from config
+  try {
+    const r = await fetch(`/api/super/gate/${selectedGate}/config`);
+    const d = await r.json();
+    if (d.ok && d.config && d.config.gate && d.config.gate.rect) {
+      zoneRect = d.config.gate.rect.slice(0, 4);
+      document.getElementById('saveZoneBtn').disabled = false;
+    }
+  } catch(e) {}
+
+  // Load preview
+  await loadZonePreview();
+
+  // Mouse events on canvas
+  canvas.addEventListener('mousedown', e => {
+    const r = canvas.getBoundingClientRect();
+    zoneStart = [e.clientX - r.left, e.clientY - r.top];
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!zoneStart) return;
+    const r = canvas.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    drawCanvasRect(zoneStart[0], zoneStart[1], x - zoneStart[0], y - zoneStart[1]);
+  });
+  canvas.addEventListener('mouseup', e => {
+    if (!zoneStart) return;
+    const r = canvas.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    const cx = Math.min(zoneStart[0], x);
+    const cy = Math.min(zoneStart[1], y);
+    const cw = Math.abs(x - zoneStart[0]);
+    const ch = Math.abs(y - zoneStart[1]);
+    if (cw > 5 && ch > 5) {
+      // Convert canvas → image coordinates
+      const sx = zoneImageW / zoneCanvasW;
+      const sy = zoneImageH / zoneCanvasH;
+      zoneRect = [
+        Math.round(cx * sx),
+        Math.round(cy * sy),
+        Math.round(cw * sx),
+        Math.round(ch * sy)
+      ];
+      drawCanvasRect(cx, cy, cw, ch);
+      document.getElementById('saveZoneBtn').disabled = false;
+      document.getElementById('zoneCoords').textContent =
+        `Zone: ${zoneRect[0]},${zoneRect[1]} ${zoneRect[2]}×${zoneRect[3]} px`;
+    }
+    zoneStart = null;
+  });
+}
+
+async function loadZonePreview() {
+  const img = document.getElementById('zonePreview');
+  if (!img) return;
+  // Use VM proxy to fetch MJPEG single frame
+  img.src = `/api/gates/${selectedGate}/preview?t=${Date.now()}`;
+
+  img.onload = () => {
+    const canvas = document.getElementById('zoneCanvas');
+    zoneImageW   = img.naturalWidth  || 1920;
+    zoneImageH   = img.naturalHeight || 1080;
+    zoneCanvasW  = img.clientWidth;
+    zoneCanvasH  = img.clientHeight;
+    canvas.width  = zoneCanvasW;
+    canvas.height = zoneCanvasH;
+    // Re-draw existing zone if loaded
+    if (zoneRect) {
+      const sx = zoneCanvasW / zoneImageW;
+      const sy = zoneCanvasH / zoneImageH;
+      drawCanvasRect(zoneRect[0]*sx, zoneRect[1]*sy, zoneRect[2]*sx, zoneRect[3]*sy);
+      document.getElementById('zoneCoords').textContent =
+        `Zone: ${zoneRect[0]},${zoneRect[1]} ${zoneRect[2]}×${zoneRect[3]} px`;
+    }
+  };
+}
+
+function drawCanvasRect(x, y, w, h) {
+  if (!zoneCtx) return;
+  zoneCtx.clearRect(0, 0, zoneCanvasW, zoneCanvasH);
+  // Semi-transparent overlay outside zone
+  zoneCtx.fillStyle = 'rgba(0,0,0,0.45)';
+  zoneCtx.fillRect(0, 0, zoneCanvasW, zoneCanvasH);
+  // Punch out the zone
+  zoneCtx.clearRect(x, y, w, h);
+  // Border
+  zoneCtx.strokeStyle = '#5b8def';
+  zoneCtx.lineWidth   = 2;
+  zoneCtx.strokeRect(x, y, w, h);
+  // Corner markers
+  zoneCtx.fillStyle = '#5b8def';
+  [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([cx,cy]) => {
+    zoneCtx.fillRect(cx-3, cy-3, 6, 6);
+  });
+}
+
+function clearZone() {
+  zoneRect = null;
+  if (zoneCtx) zoneCtx.clearRect(0, 0, zoneCanvasW, zoneCanvasH);
+  document.getElementById('saveZoneBtn').disabled = true;
+  document.getElementById('zoneCoords').textContent = '';
+}
+
+async function saveZone() {
+  if (!zoneRect) { alert('Draw a zone first'); return; }
+  if (!confirm(`Push zone ${zoneRect.join(', ')} to gate ${selectedGate}? App will restart.`)) return;
+  setStatus('Pushing zone...');
+  try {
+    const r = await fetch(`/api/gates/${selectedGate}/zone`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rect: zoneRect})
+    });
+    const d = await r.json();
+    setStatus(d.ok ? '✓ Zone saved — app restarting' : 'Save failed', d.ok ? 'success' : 'error');
+  } catch(e) {
+    setStatus('Save error: ' + e.message, 'error');
+  }
+}
+
+// ── Configuration tab ──────────────────────────────────────────────────────
+function renderConfig() {
+  if (selectedGate === 'ALL') {
+    return `
+      <div class="alert alert-info">
+        <strong>Bulk mode</strong> — changes will apply to all ${allGates.length} gates.
+        Switch to a specific gate for individual configuration.
+      </div>
+      ${configFormHTML(true)}
+    `;
+  }
+  const g = allGates.find(x => x.id == selectedGate);
+  if (!g) return '<div class="empty">Gate not found</div>';
+
+  return `
+    <div class="alert alert-info">Configuring <strong>Gate ${g.id} — ${g.name}</strong> (${g.online ? 'online' : 'OFFLINE'})</div>
+    ${configFormHTML(false)}
+  `;
+}
+
+function configFormHTML(bulk) {
+  return `
+    <div class="card">
+      <div class="card-title">Camera</div>
+      <div class="grid-2">
+        <div class="form-row"><label>Resolution</label>
+          <select id="cfg_resolution"><option>HD1080</option><option>HD720</option><option>HD2K</option></select></div>
+        <div class="form-row"><label>FPS</label>
+          <select id="cfg_fps"><option>60</option><option>30</option><option>15</option></select></div>
+        <div class="form-row"><label>Auto Exposure</label>
+          <select id="cfg_autoexp"><option value="true">On</option><option value="false">Off</option></select></div>
+        <div class="form-row"><label>Exposure</label>
+          <input type="number" id="cfg_exposure" value="30" min="1" max="100"/></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">System</div>
+      <div class="form-row"><label>Lock duration (s)</label>
+        <input type="number" id="cfg_lock" value="5.0" step="0.5"/></div>
+      <div class="form-row"><label>Forklift IDs (comma sep)</label>
+        <input type="text" id="cfg_forklifts" placeholder="4,7,12"/></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">LED Controller</div>
+      <div class="form-row"><label>WLED IP</label>
+        <input type="text" id="cfg_led_ip" placeholder="192.168.1.100"/></div>
+      <button class="btn btn-sm" onclick="testLED()">Test LED (blink red)</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">WMS Integration</div>
+      <div class="form-row"><label>Webhook URL</label>
+        <input type="text" id="cfg_wms_url" placeholder="https://customer-wms.com/api/digiload"/></div>
+      <div class="form-row"><label>API Key (HMAC secret)</label>
+        <input type="password" id="cfg_wms_key"/></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Raw JSON Edit (advanced)</div>
+      <div class="form-row"><label>Patch</label>
+        <textarea id="cfg_raw" placeholder='{"system": {"lock_duration": 7.0}}'></textarea></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px">
+        Partial config — agent merges with existing. Use this for fields not in the form above.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn btn-primary" onclick="pushConfig(${bulk}, false)">💾 Save (no restart)</button>
+      <button class="btn btn-primary" onclick="pushConfig(${bulk}, true)">💾🔄 Save + Restart App</button>
+    </div>
+  `;
+}
+
+async function pushConfig(bulk, restart) {
+  const cfg = {};
+
+  // Camera
+  const res = document.getElementById('cfg_resolution').value;
+  const fps = parseInt(document.getElementById('cfg_fps').value);
+  if (res || fps) {
+    cfg.camera = {primary: {resolution: res, fps}};
+    cfg.camera.auto_exposure = document.getElementById('cfg_autoexp').value === 'true';
+    cfg.camera.exposure      = parseInt(document.getElementById('cfg_exposure').value);
+  }
+
+  // System
+  const lock      = parseFloat(document.getElementById('cfg_lock').value);
+  const forklifts = document.getElementById('cfg_forklifts').value;
+  cfg.system = {lock_duration: lock};
+  if (forklifts) {
+    cfg.system.forklift_ids = forklifts.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  }
+
+  // LED
+  const ledIp = document.getElementById('cfg_led_ip').value;
+  if (ledIp) cfg.led = {ip: ledIp};
+
+  // WMS
+  const wmsUrl = document.getElementById('cfg_wms_url').value;
+  const wmsKey = document.getElementById('cfg_wms_key').value;
+  if (wmsUrl || wmsKey) cfg.wms = {webhook_url: wmsUrl, api_key: wmsKey};
+
+  // Raw JSON merge
+  const raw = document.getElementById('cfg_raw').value.trim();
+  if (raw) {
+    try { Object.assign(cfg, JSON.parse(raw)); }
+    catch(e) { alert('Invalid JSON: ' + e.message); return; }
+  }
+
+  if (Object.keys(cfg).length === 0) { alert('Nothing to push'); return; }
+  if (!confirm(`Push config to ${bulk ? 'ALL ' + allGates.length + ' gates' : 'gate ' + selectedGate}${restart ? ' AND RESTART' : ''}?`)) return;
+
+  setStatus('Pushing config...');
+  const url = bulk ? '/api/super/gates/all/config' : `/api/super/gate/${selectedGate}/config`;
+  try {
+    const r = await fetch(url, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({config: cfg, restart_app: restart})
+    });
+    const d = await r.json();
+    setStatus(d.ok ? '✓ Config pushed' : 'Push failed', d.ok ? 'success' : 'error');
+  } catch(e) {
+    setStatus('Push error: ' + e.message, 'error');
+  }
+}
+
+async function testLED() {
+  alert('LED test will be wired in next iteration — for now use WLED web UI directly');
+}
+
+// ── Plugins tab ─────────────────────────────────────────────────────────────
+function renderPlugins() {
+  const note = selectedGate === 'ALL'
+    ? '<div class="alert alert-info"><strong>Bulk mode</strong> — toggles apply to all gates</div>'
+    : `<div class="alert alert-info">Configuring <strong>Gate ${selectedGate}</strong></div>`;
+
+  return `
+    ${note}
+    <div class="card">
+      <div class="card-title">Layer 2 — Key Features (default ON)</div>
+      <div class="toggle-row">
+        <div><div class="toggle-name">LED Control</div>
+          <div class="toggle-desc">WLED LED strip color feedback</div></div>
+        <div class="toggle on" data-key="features.led_control" onclick="togglePlugin(this)"></div>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-name">Disk Manager</div>
+          <div class="toggle-desc">Auto-delete old clips (works only with video_tracking)</div></div>
+        <div class="toggle on" data-key="features.disk_manager" onclick="togglePlugin(this)"></div>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-name">HUD</div>
+          <div class="toggle-desc">OpenCV overlay on camera monitor (disable for headless)</div></div>
+        <div class="toggle on" data-key="features.hud" onclick="togglePlugin(this)"></div>
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-name">Sound Feedback</div>
+          <div class="toggle-desc">Audio cues on validation/error (requires speaker)</div></div>
+        <div class="toggle on" data-key="features.sound" onclick="togglePlugin(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Layer 3 — Plugins (default OFF, per customer)</div>
+      <div class="toggle-row">
+        <div><div class="toggle-name">Video Tracking <span class="tier-badge tier-2">TIER 2</span></div>
+          <div class="toggle-desc">Pre/post clip recording on validation. License key required.</div></div>
+        <div class="toggle" data-key="modules.video_tracking.enabled" onclick="togglePlugin(this)"></div>
+      </div>
+      <div class="form-row" style="margin-left:0">
+        <label style="font-size:10px">License Key</label>
+        <input type="text" id="lic_video_tracking" placeholder="paste license key here..."/>
+      </div>
+
+      <div class="toggle-row">
+        <div><div class="toggle-name">Multi-Angle <span class="tier-badge tier-3">TIER 3</span></div>
+          <div class="toggle-desc">Dual camera split-view clips. Requires video_tracking + license.</div></div>
+        <div class="toggle" data-key="modules.multi_angle.enabled" onclick="togglePlugin(this)"></div>
+      </div>
+      <div class="form-row" style="margin-left:0">
+        <label style="font-size:10px">License Key</label>
+        <input type="text" id="lic_multi_angle" placeholder="paste license key here..."/>
+      </div>
+
+      <div class="toggle-row">
+        <div><div class="toggle-name">SFTP Watcher</div>
+          <div class="toggle-desc">Auto-import missions from /sftp/incoming/ folder (Phase 6)</div></div>
+        <div class="toggle" data-key="modules.sftp_watcher.enabled" onclick="togglePlugin(this)"></div>
+      </div>
+
+      <div class="toggle-row">
+        <div><div class="toggle-name">MQTT Input</div>
+          <div class="toggle-desc">Receive missions via MQTT broker (Phase 10)</div></div>
+        <div class="toggle disabled" data-key="modules.mqtt_input.enabled"></div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="savePlugins(${selectedGate === 'ALL'})">💾 Save Plugin Configuration</button>
+    <button class="btn" onclick="savePlugins(${selectedGate === 'ALL'}, true)">💾🔄 Save + Restart App</button>
+  `;
+}
+
+function togglePlugin(el) {
+  if (el.classList.contains('disabled')) return;
+  el.classList.toggle('on');
+}
+
+async function savePlugins(bulk, restart=false) {
+  const cfg = {features:{}, modules:{}};
+  document.querySelectorAll('[data-key]').forEach(el => {
+    const key = el.dataset.key;
+    const on  = el.classList.contains('on');
+    const parts = key.split('.');
+    let target = cfg;
+    for (let i = 0; i < parts.length - 1; i++) {
+      target[parts[i]] = target[parts[i]] || {};
+      target = target[parts[i]];
+    }
+    target[parts[parts.length - 1]] = on;
+  });
+
+  // Add license keys if entered
+  const vtKey = document.getElementById('lic_video_tracking')?.value;
+  const maKey = document.getElementById('lic_multi_angle')?.value;
+  if (vtKey) cfg.modules.video_tracking = {...cfg.modules.video_tracking, license_key: vtKey};
+  if (maKey) cfg.modules.multi_angle    = {...cfg.modules.multi_angle,    license_key: maKey};
+
+  if (!confirm(`Apply plugin config to ${bulk ? 'ALL gates' : 'gate ' + selectedGate}${restart ? ' AND RESTART' : ''}?`)) return;
+
+  setStatus('Pushing plugin config...');
+  const url = bulk ? '/api/super/gates/all/config' : `/api/super/gate/${selectedGate}/config`;
+  const r = await fetch(url, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({config: cfg, restart_app: restart})
+  });
+  const d = await r.json();
+  setStatus(d.ok ? '✓ Plugin config saved' : 'Save failed', d.ok ? 'success' : 'error');
+}
+
+// ── CSV Mapping tab ─────────────────────────────────────────────────────────
+function renderCSV() {
+  if (selectedGate === 'ALL') {
+    return '<div class="alert alert-warn">CSV mapping is per-gate. Select a specific gate.</div>';
+  }
+  return `
+    <div class="card">
+      <div class="card-title">CSV Column Mapping — Gate ${selectedGate}</div>
+      <div id="csvMapping">Loading...</div>
+      <div style="margin-top:14px">
+        <button class="btn btn-primary" onclick="addMappingRow()">+ Add Mapping</button>
+        <button class="btn btn-primary" onclick="saveMapping()">💾 Save</button>
+        <button class="btn btn-danger" onclick="resetMapping()">Reset to Auto-Detect</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Test Mapping</div>
+      <textarea id="csvTest" placeholder='{"NR_SSCC": "37602...", "ARTICLE": "REF-001", "POIDS_BRUT": "480"}'></textarea>
+      <button class="btn" onclick="testMapping()" style="margin-top:10px">Test</button>
+      <div id="csvResult"></div>
+    </div>
+  `;
+}
+
+let csvFields = [];
+async function loadCSVMapping() {
+  if (selectedGate === 'ALL') return;
+  const [mapping, fields] = await Promise.all([
+    fetch(`/api/csv-mapping/${selectedGate}`).then(r => r.json()),
+    fetch('/api/csv-mapping/fields').then(r => r.json())
+  ]);
+  csvFields = fields.fields || [];
+  const m = mapping.mapping || {};
+  const div = document.getElementById('csvMapping');
+  if (!div) return;
+  let html = '<table><thead><tr><th>Customer Column</th><th>→ Digiload Field</th><th></th></tr></thead><tbody id="mapBody">';
+  for (const [k, v] of Object.entries(m)) {
+    html += mappingRow(k, v);
+  }
+  html += '</tbody></table>';
+  div.innerHTML = html;
+}
+
+function mappingRow(col='', field='') {
+  const opts = csvFields.map(f => `<option ${f===field?'selected':''}>${f}</option>`).join('');
+  return `<tr>
+    <td><input type="text" value="${col}" class="map-col" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:3px;width:100%"/></td>
+    <td><select class="map-field" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:3px;width:100%"><option></option>${opts}</select></td>
+    <td><button class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">×</button></td>
+  </tr>`;
+}
+
+function addMappingRow() {
+  const tbody = document.getElementById('mapBody');
+  if (tbody) tbody.insertAdjacentHTML('beforeend', mappingRow());
+}
+
+async function saveMapping() {
+  const mapping = {};
+  document.querySelectorAll('#mapBody tr').forEach(tr => {
+    const col   = tr.querySelector('.map-col').value.trim();
+    const field = tr.querySelector('.map-field').value;
+    if (col && field) mapping[col] = field;
+  });
+  await fetch(`/api/csv-mapping/${selectedGate}`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mapping})
+  });
+  setStatus('✓ Mapping saved', 'success');
+}
+
+async function resetMapping() {
+  if (!confirm('Reset mapping to auto-detect?')) return;
+  await fetch(`/api/csv-mapping/${selectedGate}`, {method:'DELETE'});
+  loadCSVMapping();
+}
+
+async function testMapping() {
+  const txt = document.getElementById('csvTest').value;
+  let row;
+  try { row = JSON.parse(txt); }
+  catch(e) { alert('Invalid JSON'); return; }
+  const mapping = {};
+  document.querySelectorAll('#mapBody tr').forEach(tr => {
+    const col = tr.querySelector('.map-col').value.trim();
+    const fld = tr.querySelector('.map-field').value;
+    if (col && fld) mapping[col] = fld;
+  });
+  const r = await fetch('/api/csv-mapping/preview', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({row, mapping})
+  });
+  const d = await r.json();
+  document.getElementById('csvResult').innerHTML =
+    `<div class="alert alert-success" style="margin-top:10px"><pre>${JSON.stringify(d.result, null, 2)}</pre></div>`;
+}
+
+// ── Print Center ────────────────────────────────────────────────────────────
+function renderPrint() {
+  const gates = allGates.map(g =>
+    `<tr>
+      <td>Gate ${g.id} — ${g.name}</td>
+      <td><a href="/gate/${g.id}/qr" target="_blank" class="btn btn-sm">📱 QR Driver</a></td>
+    </tr>`).join('');
+  return `
+    <div class="card">
+      <div class="card-title">QR Codes (post at gate for driver tablets)</div>
+      <table>
+        <thead><tr><th>Gate</th><th>Action</th></tr></thead>
+        <tbody>${gates || '<tr><td colspan="2" class="empty">No gates registered</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">Forklift ID Barcodes</div>
+      <div class="alert alert-info">Forklift barcode generator coming in Session 5 — for now use the same Code 128 format as TOUR sheets.</div>
+    </div>
+  `;
+}
+
+// ── Health tab ──────────────────────────────────────────────────────────────
+function renderHealth() {
+  const cards = allGates.map(g => `
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <strong>Gate ${g.id} — ${g.name}</strong>
+          ${g.online ? '<span class="badge badge-green" style="margin-left:8px">ONLINE</span>'
+                    : '<span class="badge badge-red" style="margin-left:8px">OFFLINE</span>'}
+        </div>
+        <span style="font-size:11px;color:var(--text3)">${g.app_mode || '—'}</span>
+      </div>
+      <div class="grid-3" style="margin-top:10px">
+        <div><div style="font-size:10px;color:var(--text3)">CPU</div>
+          <div style="font-size:18px">${g.cpu_pct != null ? g.cpu_pct + '%' : '—'}</div></div>
+        <div><div style="font-size:10px;color:var(--text3)">RAM</div>
+          <div style="font-size:18px">${g.ram_mb != null ? Math.round(g.ram_mb) + ' MB' : '—'}</div></div>
+        <div><div style="font-size:10px;color:var(--text3)">DISK</div>
+          <div style="font-size:18px">${g.disk_free_gb != null ? g.disk_free_gb.toFixed(1) + ' GB' : '—'}</div></div>
+      </div>
+    </div>
+  `).join('');
+  return cards || '<div class="empty">No gates</div>';
+}
+
+// ── Logs tab ───────────────────────────────────────────────────────────────
+function renderLogs() {
+  if (selectedGate === 'ALL') return '<div class="alert alert-warn">Select a specific gate to view logs</div>';
+  return `
+    <div class="card">
+      <div class="card-title">Remote Logs — Gate ${selectedGate}</div>
+      <button class="btn btn-sm" onclick="fetchLogs(50)">Last 50 lines</button>
+      <button class="btn btn-sm" onclick="fetchLogs(200)">Last 200</button>
+      <button class="btn btn-sm" onclick="fetchLogs(500)">Last 500</button>
+      <pre id="logArea" style="margin-top:14px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;max-height:600px;overflow:auto;font-size:11px"></pre>
+    </div>
+  `;
+}
+
+async function fetchLogs(n) {
+  const r = await fetch(`/api/gates/${selectedGate}/logs?n=${n}`);
+  const d = await r.json();
+  document.getElementById('logArea').textContent = (d.lines || []).join('\n');
+}
+
+// ── Deploy tab ─────────────────────────────────────────────────────────────
+function renderDeploy() {
+  return `
+    <div class="card">
+      <div class="card-title">Rolling Deploy</div>
+      <div class="alert alert-info">
+        Pushes new ZED Box code to all gates sequentially. Each gate is updated and restarted before the next one.
+        Stops on first failure.
+      </div>
+      <p style="color:var(--text2);margin-bottom:14px">Use the dedicated Health Dashboard for now:</p>
+      <a href="/health-dashboard" class="btn btn-primary" target="_blank">Open Health Dashboard →</a>
+    </div>
+  `;
+}
+
+// ── Audit tab ───────────────────────────────────────────────────────────────
+function renderAudit() {
+  return `
+    <div class="card">
+      <div class="card-title">Audit Log</div>
+      <a href="/audit" class="btn btn-primary" target="_blank">Open Full Audit Log →</a>
+    </div>
+  `;
+}
+
+// ── Backup tab ──────────────────────────────────────────────────────────────
+function renderBackup() {
+  return `
+    <div class="card">
+      <div class="card-title">Database Backup</div>
+      <div class="alert alert-warn">Manual backup not yet implemented in this session — coming next.</div>
+      <p style="color:var(--text2)">For now, run on the VM:</p>
+      <pre style="background:var(--bg);padding:10px;border-radius:4px;font-size:11px;margin-top:8px">docker compose exec postgres pg_dump -U digiload digiload > backup.sql</pre>
+    </div>
+  `;
+}
+
+// ── API Keys tab ───────────────────────────────────────────────────────────
+function renderAPI() {
+  return `
+    <div class="card">
+      <div class="card-title">WMS API Keys</div>
+      <a href="/admin" class="btn btn-primary" target="_blank">Manage in Admin Page →</a>
+    </div>
+  `;
+}
+
+// ── Users tab ──────────────────────────────────────────────────────────────
+function renderUsers() {
+  return `
+    <div class="card">
+      <div class="card-title">User Management</div>
+      <a href="/admin" class="btn btn-primary" target="_blank">Manage in Admin Page →</a>
+    </div>
+  `;
+}
+
+// ── Licenses tab ───────────────────────────────────────────────────────────
+function renderLicenses() {
+  return `
+    <div class="card">
+      <div class="card-title">Generate License Key</div>
+      <div class="form-row"><label>Gate ID</label><input type="number" id="lic_gate"/></div>
+      <div class="form-row"><label>Module</label>
+        <select id="lic_module">
+          <option value="video_tracking">video_tracking (Tier 2)</option>
+          <option value="multi_angle">multi_angle (Tier 3)</option>
+        </select></div>
+      <div class="form-row"><label>Customer</label><input type="text" id="lic_customer" placeholder="ACME_LOGISTICS"/></div>
+      <div class="form-row"><label>Years</label><input type="number" id="lic_years" value="1" min="1" max="10"/></div>
+      <button class="btn btn-primary" onclick="genLicense()">Generate</button>
+      <div id="lic_result"></div>
+    </div>
+  `;
+}
+
+async function genLicense() {
+  const data = {
+    gate_id:  parseInt(document.getElementById('lic_gate').value),
+    module:   document.getElementById('lic_module').value,
+    customer: document.getElementById('lic_customer').value,
+    years:    parseInt(document.getElementById('lic_years').value)
+  };
+  const r = await fetch('/api/super/license/generate', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(data)
+  });
+  const d = await r.json();
+  if (d.ok) {
+    document.getElementById('lic_result').innerHTML = `
+      <div class="alert alert-success" style="margin-top:14px">
+        <strong>License Key:</strong>
+        <div style="margin-top:8px;padding:10px;background:var(--bg);border-radius:4px;font-size:11px;word-break:break-all;font-family:monospace">${d.license_key}</div>
+        <div style="margin-top:8px;font-size:11px">Expires: ${d.payload.expires}</div>
+        <button class="btn btn-sm" onclick="navigator.clipboard.writeText('${d.license_key}'); setStatus('Copied to clipboard', 'success')">📋 Copy</button>
+      </div>`;
+  } else {
+    document.getElementById('lic_result').innerHTML =
+      `<div class="alert alert-error" style="margin-top:14px">${d.error}</div>`;
+  }
+}
+
+// ── SFTP tab ───────────────────────────────────────────────────────────────
+async function renderSFTPasync() {
+  try {
+    const r = await fetch('/api/super/sftp/files');
+    const d = await r.json();
+    const list = (arr, label) => arr.length === 0
+      ? `<div class="empty">No ${label} files</div>`
+      : `<table><thead><tr><th>Filename</th><th>Size</th><th>Modified</th></tr></thead><tbody>${
+          arr.map(f => `<tr><td>${f.name}</td><td>${(f.size/1024).toFixed(1)} KB</td><td>${new Date(f.mtime*1000).toLocaleString()}</td></tr>`).join('')
+        }</tbody></table>`;
+    document.getElementById('content').innerHTML = `
+      <div class="card">
+        <div class="card-title">Incoming (${d.incoming.length})</div>
+        ${list(d.incoming, 'incoming')}
+      </div>
+      <div class="card">
+        <div class="card-title">Archive (last 50)</div>
+        ${list(d.archive, 'archive')}
+      </div>
+      <div class="card">
+        <div class="card-title">Failed (last 50)</div>
+        ${list(d.failed, 'failed')}
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById('content').innerHTML = '<div class="alert alert-error">Failed to load SFTP files</div>';
+  }
+}
+
+function renderSFTP() {
+  setTimeout(renderSFTPasync, 50);
+  return '<div class="empty">Loading SFTP files...</div>';
+}
+
+// ── Initial load ───────────────────────────────────────────────────────────
+init();
+
+// Reload CSV mapping when CSV tab is opened
+document.querySelector('[data-tab="csv"]').addEventListener('click', () => {
+  setTimeout(loadCSVMapping, 100);
+});
+</script>
+
+</body>
+</html>

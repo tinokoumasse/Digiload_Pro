@@ -98,7 +98,7 @@ def init_db():
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email         TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        role          TEXT NOT NULL CHECK (role IN ('ADMIN','SUPERVISOR','OPERATOR')),
+        role          TEXT NOT NULL CHECK (role IN ('SUPER_ADMIN','ADMIN','SUPERVISOR','OPERATOR')),
         active        BOOLEAN DEFAULT true,
         login_fails   INTEGER DEFAULT 0,
         created_at    TIMESTAMPTZ DEFAULT now(),
@@ -187,6 +187,14 @@ def init_db():
 
     -- Add extra_fields to pallets if upgrading from older schema
     ALTER TABLE pallets ADD COLUMN IF NOT EXISTS extra_fields JSONB DEFAULT '{}';
+
+    -- Allow SUPER_ADMIN role on existing installations (DL-030)
+    DO $$ BEGIN
+        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+        ALTER TABLE users ADD CONSTRAINT users_role_check
+            CHECK (role IN ('SUPER_ADMIN','ADMIN','SUPERVISOR','OPERATOR'));
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS clips (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -354,8 +362,18 @@ def agent_secret_required(f):
         return f(*args, **kwargs)
     return decorated
 
+def super_admin_required(f):
+    """For internal MDM routes — only SUPER_ADMIN role can access."""
+    @wraps(f)
+    @login_required
+    def decorated(*args, **kwargs):
+        if request.user.get("role") != "SUPER_ADMIN":
+            return jsonify({"ok": False, "error": "Super admin only"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
 def _can_access_gate(user_payload: dict, gate_id: int) -> bool:
-    if user_payload.get("role") == "ADMIN":
+    if user_payload.get("role") in ("SUPER_ADMIN", "ADMIN"):
         return True
     return gate_id in (user_payload.get("gates") or [])
 
@@ -753,7 +771,7 @@ def missions_page():
                            gates=gates)
 
 @app.route("/admin")
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def admin_page():
     users = _q("SELECT id,email,role,active,created_at,last_login FROM users ORDER BY created_at",
                fetchall=True) or []
@@ -767,11 +785,198 @@ def admin_page():
                            api_keys=api_keys)
 
 @app.route("/audit")
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def audit_page():
     logs = _q("""SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500""",
               fetchall=True) or []
     return render_template("audit.html", user=request.user, logs=logs)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── SUPER ADMIN PANEL — MDM (Internal Use, DL-030) ────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/admin/super")
+@super_admin_required
+def super_admin_page():
+    """
+    Internal MDM panel — for Digiload team only.
+    SUPER_ADMIN role required. Configure all gates remotely from one place.
+    """
+    return render_template("super_admin.html", user=request.user)
+
+@app.route("/api/super/gates")
+@super_admin_required
+def super_list_gates():
+    """List all gates with full status + config snapshot."""
+    gates = _q("SELECT * FROM gates ORDER BY id", fetchall=True) or []
+    states = get_all_gate_states()
+    state_by_id = {s["gate_id"]: s for s in states}
+    result = []
+    for g in gates:
+        s = state_by_id.get(g["id"], {})
+        result.append({
+            **dict(g),
+            "online":         s.get("status") == "ONLINE",
+            "ip":             s.get("ip"),
+            "app_mode":       s.get("app_mode"),
+            "app_version":    s.get("app_version"),
+            "agent_version":  s.get("agent_version"),
+            "cpu_pct":        s.get("cpu_pct"),
+            "ram_mb":         s.get("ram_mb"),
+            "disk_free_gb":   s.get("disk_free_gb"),
+            "camera_ok":      s.get("camera_ok"),
+            "modules_active": s.get("modules_active", []),
+            "last_heartbeat": s.get("last_heartbeat"),
+        })
+    return jsonify({"ok": True, "gates": result})
+
+@app.route("/api/super/gate/<int:gate_id>/config", methods=["GET"])
+@super_admin_required
+def super_get_gate_config(gate_id):
+    """Pull current config from ZED Box agent."""
+    config = _get_from_agent(gate_id, "/agent/config-current") or {}
+    if not config:
+        # Fallback — read from VM gate_config_queue
+        row = _q("""SELECT config FROM gate_config_queue
+                    WHERE gate_id=%s ORDER BY created_at DESC LIMIT 1""",
+                 (gate_id,), fetchone=True)
+        config = row["config"] if row else {}
+    return jsonify({"ok": True, "config": config, "gate_id": gate_id})
+
+@app.route("/api/super/gate/<int:gate_id>/config", methods=["POST"])
+@super_admin_required
+def super_push_gate_config(gate_id):
+    """Push partial config update to ZED Box. Agent merges with existing."""
+    data        = request.get_json(silent=True) or {}
+    config      = data.get("config", {})
+    restart_app = data.get("restart_app", False)
+
+    if not config:
+        return jsonify({"ok": False, "error": "No config provided"}), 400
+
+    result = _push_to_agent(gate_id, "/agent/apply-config", {
+        "config":      config,
+        "restart_app": restart_app
+    })
+
+    _audit("super.config_pushed", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_id": gate_id, "keys": list(config.keys()),
+                    "restart": restart_app})
+    log.info(f"[super] Config push to gate {gate_id} — {list(config.keys())}")
+    return jsonify({"ok": True, "result": result})
+
+@app.route("/api/super/gates/all/config", methods=["POST"])
+@super_admin_required
+def super_push_all_gates():
+    """Bulk push config to ALL gates."""
+    data        = request.get_json(silent=True) or {}
+    config      = data.get("config", {})
+    restart_app = data.get("restart_app", False)
+
+    if not config:
+        return jsonify({"ok": False, "error": "No config provided"}), 400
+
+    gates = _q("SELECT id FROM gates", fetchall=True) or []
+    results = []
+    for g in gates:
+        try:
+            r = _push_to_agent(g["id"], "/agent/apply-config", {
+                "config": config, "restart_app": restart_app
+            })
+            results.append({"gate_id": g["id"], "ok": True, "result": r})
+        except Exception as e:
+            results.append({"gate_id": g["id"], "ok": False, "error": str(e)})
+
+    _audit("super.bulk_config_pushed", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_count": len(gates), "keys": list(config.keys())})
+
+    return jsonify({"ok": True, "gates_processed": len(gates), "results": results})
+
+@app.route("/api/super/gate/<int:gate_id>", methods=["PATCH"])
+@super_admin_required
+def super_edit_gate(gate_id):
+    """Edit gate name."""
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Name required"}), 400
+    _q("UPDATE gates SET name=%s WHERE id=%s", (name, gate_id))
+    _audit("super.gate_renamed", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_id": gate_id, "name": name})
+    return jsonify({"ok": True})
+
+@app.route("/api/super/gate/<int:gate_id>", methods=["DELETE"])
+@super_admin_required
+def super_delete_gate(gate_id):
+    """Delete (decommission) a gate."""
+    _q("DELETE FROM gates WHERE id=%s", (gate_id,))
+    _audit("super.gate_deleted", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_id": gate_id})
+    log.warning(f"[super] Gate {gate_id} DELETED")
+    return jsonify({"ok": True})
+
+@app.route("/api/super/sftp/files")
+@super_admin_required
+def super_sftp_files():
+    """List files in SFTP folders."""
+    def _list(folder):
+        if not os.path.isdir(folder): return []
+        return sorted([
+            {"name": f, "size": os.path.getsize(os.path.join(folder, f)),
+             "mtime": os.path.getmtime(os.path.join(folder, f))}
+            for f in os.listdir(folder)
+            if not f.startswith(".")
+        ], key=lambda x: -x["mtime"])
+    return jsonify({
+        "ok": True,
+        "incoming": _list(SFTP_INCOMING),
+        "archive":  _list(SFTP_ARCHIVE)[:50],
+        "failed":   _list(SFTP_FAILED)[:50],
+    })
+
+@app.route("/api/super/license/generate", methods=["POST"])
+@super_admin_required
+def super_generate_license():
+    """Generate a license key for a gate + module."""
+    data       = request.get_json(silent=True) or {}
+    gate_id    = data.get("gate_id")
+    module     = data.get("module", "video_tracking")
+    customer   = data.get("customer", "DEFAULT")
+    years      = int(data.get("years", 1))
+
+    if not gate_id:
+        return jsonify({"ok": False, "error": "gate_id required"}), 400
+
+    secret = os.environ.get("DIGILOAD_LICENSE_SECRET", "")
+    if not secret:
+        return jsonify({"ok": False, "error": "DIGILOAD_LICENSE_SECRET not set"}), 500
+
+    import json as _json
+    import base64 as _b64
+    payload = {
+        "gate_id":  int(gate_id),
+        "module":   module,
+        "customer": customer,
+        "issued":   dt.datetime.utcnow().isoformat(),
+        "expires":  (dt.datetime.utcnow() + dt.timedelta(days=365*years)).isoformat(),
+    }
+    payload_json = _json.dumps(payload, sort_keys=True)
+    sig = hmac.new(secret.encode(), payload_json.encode(), hashlib.sha256).digest()
+    payload_b64 = _b64.urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
+    sig_b64     = _b64.urlsafe_b64encode(sig).decode().rstrip("=")
+    license_key = f"{payload_b64}.{sig_b64}"
+
+    _audit("super.license_generated", user_id=request.user.get("sub"),
+           user_email=request.user.get("email"),
+           details={"gate_id": gate_id, "module": module, "customer": customer,
+                    "expires": payload["expires"]})
+
+    return jsonify({"ok": True, "license_key": license_key, "payload": payload})
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ── MISSION API (dashboard) ──────────────────────────────────────────────────
@@ -970,7 +1175,7 @@ def gate_status(gate_id):
     return jsonify({"ok": True, "state": state})
 
 @app.route("/api/gates/<int:gate_id>/config", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def push_config(gate_id):
     data        = request.get_json(silent=True) or {}
     new_config  = data.get("config")
@@ -986,7 +1191,7 @@ def push_config(gate_id):
     return jsonify(result)
 
 @app.route("/api/gates/<int:gate_id>/command", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def gate_command(gate_id):
     data = request.get_json(silent=True) or {}
     cmd  = data.get("cmd","")
@@ -997,7 +1202,7 @@ def gate_command(gate_id):
     return jsonify(result)
 
 @app.route("/api/gates/<int:gate_id>/zone", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def push_gate_zone(gate_id):
     rect = (request.get_json(silent=True) or {}).get("rect")
     if not rect or len(rect) != 4:
@@ -1010,14 +1215,14 @@ def push_gate_zone(gate_id):
     return jsonify(result)
 
 @app.route("/api/gates/<int:gate_id>/logs")
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def gate_logs(gate_id):
     n      = int(request.args.get("n", 100))
     result = _get_from_agent(gate_id, f"/agent/logs?n={n}")
     return jsonify(result)
 
 @app.route("/api/gates/<int:gate_id>/preview")
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def gate_preview_proxy(gate_id):
     """Proxy the MJPEG stream from the ZED Box agent."""
     ip = _gate_ip(gate_id)
@@ -1037,7 +1242,7 @@ def gate_preview_proxy(gate_id):
                     content_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/api/gates/<int:gate_id>/deploy", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def deploy_to_gate(gate_id):
     data    = request.get_json(silent=True) or {}
     version = data.get("version","unknown")
@@ -1255,7 +1460,7 @@ def wms_gate_status(gate_id):
 # ── ADMIN API ────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/api/admin/users", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def create_user():
     data  = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
@@ -1292,7 +1497,7 @@ def create_user():
     return jsonify({"ok": True, "user_id": str(user_id)})
 
 @app.route("/api/admin/users/<user_id>/deactivate", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def deactivate_user(user_id):
     _q("UPDATE users SET active=false WHERE id=%s", (user_id,))
     _audit("user.deactivated", user_id=request.user.get("sub"),
@@ -1352,7 +1557,7 @@ def save_mapping(gate_id):
 
 @app.route("/api/csv-mapping/<int:gate_id>", methods=["DELETE"])
 @login_required
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def delete_mapping(gate_id):
     """Reset to auto-detect (delete custom mapping)."""
     _q("DELETE FROM csv_mappings WHERE gate_id=%s", (gate_id,))
@@ -1379,7 +1584,7 @@ def list_standard_fields():
 
 
 @app.route("/api/admin/gates", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def register_gate():
     data = request.get_json(silent=True) or {}
     gid  = data.get("id")
@@ -1392,7 +1597,7 @@ def register_gate():
     return jsonify({"ok": True, "gate_id": gid})
 
 @app.route("/api/admin/api-keys", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def create_api_key():
     data    = request.get_json(silent=True) or {}
     name    = data.get("name","unnamed")
@@ -1411,7 +1616,7 @@ def get_config():
     return jsonify({"ok": True})
 
 @app.route("/api/config", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def save_global_config():
     return jsonify({"ok": True})
 
@@ -1516,7 +1721,7 @@ def health_dashboard():
 _deploy_jobs = {}   # job_id → { status, progress, results }
 
 @app.route("/api/fleet/deploy", methods=["POST"])
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def fleet_deploy():
     """
     Rolling deploy to multiple gates.
@@ -1587,7 +1792,7 @@ def fleet_deploy():
     })
 
 @app.route("/api/fleet/deploy/<job_id>")
-@role_required("ADMIN")
+@role_required("SUPER_ADMIN", "ADMIN")
 def deploy_job_status(job_id):
     """Poll deploy job progress."""
     job = _deploy_jobs.get(job_id)

@@ -467,8 +467,14 @@ function render() {
     setTimeout(() => inp.focus(), 100);
 
   } else if (step === 2) {
-    sa.style.display     = 'none';
-    pw.style.display     = '';
+    // Scan input stays visible for SSCC scanning during loading
+    sa.style.display = '';
+    pw.style.display = '';
+    lbl.textContent  = t('step2_lbl');
+    inp.placeholder  = t('step2_ph');
+    inp.value        = '';
+    btn.style.display = 'none';   // no confirm button — Enter triggers scan
+    setTimeout(() => inp.focus(), 100);
     renderLiveState();
   }
 }
@@ -539,7 +545,64 @@ async function confirmStep() {
     missionRef = val;
     const ok = await activateMission();
     if (ok) { step = 2; render(); }
+
+  } else if (step === 2) {
+    // SSCC scan during loading — channel 2 (tablet → ZED Box)
+    await sendScan(val);
   }
+}
+
+async function sendScan(sscc) {
+  const inp = document.getElementById('scan-input');
+  inp.value = '';   // clear immediately for next scan
+
+  if (!ZED_URL) {
+    flashFeedback('No ZED Box connection', 'error');
+    return;
+  }
+
+  try {
+    const r = await fetch(`${ZED_URL}/agent/scan`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sscc, source: 'tablet'})
+    });
+    const d = await r.json();
+
+    if (d.accepted) {
+      flashFeedback(d.message || 'Drive through', 'success');
+    } else if (d.reason === 'duplicate') {
+      flashFeedback('Already scanned', 'warn');
+      playSound('error');
+    } else if (d.reason === 'invalid_sscc') {
+      flashFeedback('Wrong barcode', 'error');
+    } else if (d.reason === 'out_of_session') {
+      flashFeedback('No active mission', 'error');
+    } else {
+      flashFeedback(d.message || 'Scan failed', 'error');
+    }
+  } catch(e) {
+    flashFeedback('Connection error', 'error');
+  }
+
+  setTimeout(() => inp.focus(), 50);
+}
+
+function flashFeedback(text, type) {
+  // Briefly override the state label with scan feedback
+  const slbl = document.getElementById('state-lbl');
+  const original = slbl.textContent;
+  const originalBg = document.body.className;
+  slbl.textContent = text;
+
+  if (type === 'warn')   document.body.className = 'state-error';   // amber-ish via red
+  else if (type === 'error') document.body.className = 'state-error';
+  else document.body.className = 'state-validated';
+
+  setTimeout(() => {
+    document.body.className = originalBg;
+    renderLiveState();
+  }, 1200);
 }
 
 function onKey(e) {
